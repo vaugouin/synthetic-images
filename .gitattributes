@@ -1,0 +1,28 @@
+# Normalize line endings: store text as LF in the repository, check out
+# native on each platform. Prevents spurious CRLF/LF diffs on Windows.
+* text=auto
+
+# Explicit text files (stored LF in repo)
+*.py    text
+*.sql   text
+*.md    text
+*.sh    text eol=lf
+*.txt   text
+*.json  text
+*.yml   text
+*.yaml  text
+*.cfg   text
+*.ini   text
+*.env   text
+Dockerfile text
+
+# Binary files (never normalized)
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.gz    binary
+*.zip   binary
+*.pdf   binary
+*.webp  binary

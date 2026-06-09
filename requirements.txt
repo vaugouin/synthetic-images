@@ -1,0 +1,7 @@
+pymysql
+numpy
+requests
+pytz
+python-dotenv>=1.0.0
+Pillow>=10.0.0
+replicate>=0.25.0
