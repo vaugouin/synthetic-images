@@ -9,6 +9,10 @@ Two modes:
   * BATCH over a class at a usage threshold (review §11 phasing):
         python synthetic-images.py --class technical --dry-run
         python synthetic-images.py --class technical --limit 10
+  * LOGO PADDING ONLY (decision #7; zero model cost -- companies/networks default to the
+    'logo-pad' representation, which routes to the deterministic Pillow path):
+        python synthetic-images.py --class company
+        python synthetic-images.py --class network
 
 Guards (review §6): --dry-run (no API, no DB writes), --limit, and a per-run USD budget
 ceiling (RUN_BUDGET_USD). Idempotency/resume is handled per item in the pipeline (skip unless
@@ -63,11 +67,44 @@ def f_choose_representation(stritemclass, strinstanceof="", stroverride=""):
 # ---------------------------------------------------------------------------
 def f_select_technicals(lnglimit=0):
     """Phase-1 class: Technicals (73 rows, has Wikidata, the only class with real sub-types)."""
+    # Name = WIKIDATA_LABEL, falling back to DESCRIPTION (mirrors lib/technical.inc.php).
     strsql = (
         "SELECT ID_TECHNICAL AS id_item, ID_WIKIDATA AS id_wikidata, "
-        "TECHNICAL_NAME AS name, OVERVIEW AS overview, TECHNICAL_TYPE AS instance_of "
+        "COALESCE(NULLIF(WIKIDATA_LABEL,''), DESCRIPTION) AS name, "
+        "OVERVIEW AS overview, TECHNICAL_TYPE AS instance_of "
         "FROM " + strsqlns + "T2S_TECHNICAL "
         "WHERE (DELETED IS NULL OR DELETED=0) ORDER BY POPULARITY DESC"
+    )
+    if lnglimit:
+        strsql += " LIMIT {0}".format(int(lnglimit))
+    return _fetchall(strsql)
+
+
+def f_select_companies(lnglimit=0):
+    """
+    Decision-#7 class: companies pad their REAL TMDb logo (no synthesis). The LOGO_PATH filter
+    IS the v1 scope: only the ~19k rows that have a logo are selected; the ~156k logo-less
+    companies are a separate threshold/skip decision (review §4.1) and never enter the run.
+    """
+    strsql = (
+        "SELECT ID_COMPANY AS id_item, COMPANY_NAME AS name, LOGO_PATH AS logo_path "
+        "FROM " + strsqlns + "T2S_COMPANY "
+        "WHERE LOGO_PATH IS NOT NULL AND LOGO_PATH<>'' AND (DELETED IS NULL OR DELETED=0) "
+        "ORDER BY POPULARITY DESC"
+    )
+    if lnglimit:
+        strsql += " LIMIT {0}".format(int(lnglimit))
+    return _fetchall(strsql)
+
+
+def f_select_networks(lnglimit=0):
+    """Decision-#7 class: networks pad their real TMDb logo (~2.5k of 3.2k have one)."""
+    # No POPULARITY column on networks; SERIE_COUNT is the usage proxy.
+    strsql = (
+        "SELECT ID_NETWORK AS id_item, NETWORK_NAME AS name, LOGO_PATH AS logo_path "
+        "FROM " + strsqlns + "T2S_NETWORK "
+        "WHERE LOGO_PATH IS NOT NULL AND LOGO_PATH<>'' AND (DELETED IS NULL OR DELETED=0) "
+        "ORDER BY SERIE_COUNT DESC"
     )
     if lnglimit:
         strsql += " LIMIT {0}".format(int(lnglimit))
@@ -93,6 +130,8 @@ def _fetchall(strsql):
 
 SELECTORS = {
     "technical": f_select_technicals,
+    "company": f_select_companies,
+    "network": f_select_networks,
 }
 
 
@@ -101,12 +140,20 @@ SELECTORS = {
 # ---------------------------------------------------------------------------
 def f_run_single(args):
     strrep = f_choose_representation(args.item_class, args.instance_of, args.representation)
-    res = si.f_generate_synthetic_image(
-        stridwikidata=args.item_wikidata, stritemclass=args.item_class,
-        lngiditem=args.item_id, strname=args.name, stroverview=args.overview,
-        strrepresentation=strrep, lngseed=args.seed,
-        intdryrun=1 if args.dry_run else 0, intforce=1 if args.force else 0,
-    )
+    if strrep == "logo-pad":
+        # Deterministic padding path (decision #7): no model calls, zero cost. The logo path
+        # is looked up from the class table by ID inside f_pad_logo_image.
+        res = si.f_pad_logo_image(
+            stritemclass=args.item_class, lngiditem=args.item_id, strname=args.name,
+            intdryrun=1 if args.dry_run else 0, intforce=1 if args.force else 0,
+        )
+    else:
+        res = si.f_generate_synthetic_image(
+            stridwikidata=args.item_wikidata, stritemclass=args.item_class,
+            lngiditem=args.item_id, strname=args.name, stroverview=args.overview,
+            strrepresentation=strrep, lngseed=args.seed,
+            intdryrun=1 if args.dry_run else 0, intforce=1 if args.force else 0,
+        )
     _print_result(args.name or args.item_wikidata or args.item_id, res)
     return res
 
@@ -125,12 +172,20 @@ def f_run_batch(args):
         strrep = f_choose_representation(
             args.item_class, str(arr.get("instance_of") or ""), args.representation
         )
-        res = si.f_generate_synthetic_image(
-            stridwikidata=arr.get("id_wikidata"), stritemclass=args.item_class,
-            lngiditem=arr.get("id_item"), strname=str(arr.get("name") or ""),
-            stroverview=str(arr.get("overview") or ""), strrepresentation=strrep,
-            intdryrun=1 if args.dry_run else 0, intforce=1 if args.force else 0,
-        )
+        if strrep == "logo-pad":
+            res = si.f_pad_logo_image(
+                stritemclass=args.item_class, lngiditem=arr.get("id_item"),
+                strname=str(arr.get("name") or ""),
+                strlogopath=str(arr.get("logo_path") or ""),
+                intdryrun=1 if args.dry_run else 0, intforce=1 if args.force else 0,
+            )
+        else:
+            res = si.f_generate_synthetic_image(
+                stridwikidata=arr.get("id_wikidata"), stritemclass=args.item_class,
+                lngiditem=arr.get("id_item"), strname=str(arr.get("name") or ""),
+                stroverview=str(arr.get("overview") or ""), strrepresentation=strrep,
+                intdryrun=1 if args.dry_run else 0, intforce=1 if args.force else 0,
+            )
         _print_result(arr.get("name"), res)
         dblspent += res.get("cost") or 0.0
         if res["status"] == "generated":
