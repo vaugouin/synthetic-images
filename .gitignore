@@ -64,3 +64,6 @@ logs/
 *.temp
 
 citizenphilsecrets.py
+
+# Claude Code local tooling (skills, settings) -- not project code
+.claude/

@@ -67,11 +67,14 @@ CANVAS_RGB = (245, 243, 238)
 # The single {object_description} slot is the ONLY per-item variation; everything
 # else is frozen so the whole corpus renders as one coherent set.
 STYLE_TEMPLATE = (
-    "Illustrated diagram for a visual dictionary. "
+    "Illustrated plate in the style of a visual dictionary. "
     "Flat lighting, plain off-white textured paper background, encyclopedic "
     "technical-illustration style, soft realistic shading, educational reference "
     "aesthetic, minimalist composition. "
     "1990s printed visual dictionary style, Jean-Claude Corbeil aesthetic. "
+    "Just the illustrated subject on the paper, nothing else: no text, no title, "
+    "no caption, no labels, no callouts, no annotations, no leader lines, no arrows, "
+    "no legend, no numbers, no letters, no measurement marks, no border. "
     "Aspect ratio " + straspectratio + ". "
     "{object_description}"
 )
@@ -303,6 +306,109 @@ def f_lookup_wikidata_label(strname):
 # ---------------------------------------------------------------------------
 # Stage 1 -- text-to-text: source text -> pure OBJECT DESCRIPTION (no style words)
 # ---------------------------------------------------------------------------
+# Per-(class, representation) subject rule for the description stage.
+#
+# This is the ONLY part of the description prompt that varies per entity: it names
+# WHAT the central subject is. Everything else -- length, concreteness, and the
+# no-style-leakage guard that keeps the grid consistent (keystone rule #1) -- is
+# shared in f_text_to_text and never duplicated here.
+#
+# Keyed on (item_class, representation), the primary key of T_WC_T2S_REPRESENTATION.
+# Mirrors that table's T2I_PROMPT_SLOT vocabulary (02_representation_seed.sql);
+# production should read the DB column, this copy keeps the offline bake-off DB-free.
+# Each value reads grammatically after "a description of ...". Golden-set slugs that
+# differ from the seed (e.g. 'landscape' vs 'day-landscape', 'object' vs
+# 'award-object') are included as aliases so eval items hit a specific rule rather
+# than the class default. The logo-pad classes (company/network) never reach this
+# stage -- they take the deterministic Pillow path -- so they are intentionally absent.
+T2T_SUBJECT_RULES = {
+    # --- Locations (representation drives the subject; review §4.2) ---
+    ("location", "day-landscape"): "a representative daytime skyline or landscape view of the place",
+    ("location", "night-landscape"): "a representative illuminated night-time cityscape of the place",
+    ("location", "landscape"): "a representative skyline or landscape view of the place",
+    ("location", "map"): "a clean map locating the place, in neutral cartographic styling",
+    ("location", "flag"): "the official flag of the place, shown as a full rectangular flag displayed flat and front-facing with its colours and design clearly visible and correctly ordered; if a flagpole is shown it is a vertical pole along the LEFT (hoist) edge of the flag -- never a horizontal pole above the flag, and the flag hangs to the right of that pole",
+    ("location", "satellite"): "a satellite or aerial overhead view of the place",
+    ("location", "street-view"): "a street-level, eye-line view of the place",
+    ("location", "street-level"): "a street-level, eye-line view of the place",
+    ("location", "architecture"): "the building or structure as an architectural subject",
+    ("location", "building"): "the building or structure as an architectural subject",
+    ("location", "artistic"): "an imaginative depiction of the fictional place (no real photo exists)",
+    # --- Occupations (the role's instruments, never a portrait of a person) ---
+    ("occupation", "plate"): "the characteristic tools, attire and setting of the role -- its instruments, not a portrait of a person",
+    ("occupation", "artistic"): "a person shown performing the role",
+    # --- Characters ---
+    ("character", "portrait"): "a centered bust of the fictional character",
+    ("character", "artistic"): "a full-figure depiction of the fictional character",
+    # --- Awards / nominations (generic trophy; never a trademarked real one, §13) ---
+    ("award", "award-object"): "a generic award trophy or medal -- do NOT depict a trademarked real trophy such as the Oscar statuette or the Palme d'Or",
+    ("award", "object"): "a generic award trophy or medal -- do NOT depict a trademarked real trophy such as the Oscar statuette or the Palme d'Or",
+    ("nomination", "award-object"): "a generic award trophy or medal -- do NOT depict a trademarked real trophy",
+    # --- Movements (an iconic film/work that exemplifies the movement) ---
+    ("movement", "movie-poster"): "an iconic film that exemplifies the movement, framed as a single poster-like scene",
+    ("movement", "movie-snapshot"): "a single scene from an iconic film that exemplifies the movement",
+    ("movement", "group-photo"): "a group of the figures associated with the movement",
+    ("movement", "plate"): "an iconic object, scene or artifact that exemplifies the movement",
+    # --- Technicals (film-domain apparatus / material) ---
+    ("technical", "plate"): "the physical apparatus, equipment or film material that embodies the technique -- e.g. a reel or strip of film with visible imagery on the frames, a camera, a projector, or a lens",
+    # --- Genres ---
+    ("genre", "plate"): "the iconic objects, props or setting that signal the film genre",
+    ("genre", "artistic"): "an evocative montage of motifs from the film genre",
+    # --- Countries ---
+    ("country", "flag"): "the official national flag, shown as a full rectangular flag displayed flat and front-facing with its colours and design clearly visible and correctly ordered; if a flagpole is shown it is a vertical pole along the LEFT (hoist) edge of the flag -- never a horizontal pole above the flag, and the flag hangs to the right of that pole",
+    ("country", "map"): "a clean map locating the country, in neutral cartographic styling",
+    ("country", "day-landscape"): "a representative daytime landscape of the country",
+    # --- Languages (the script, NOT a flag, §4.1) ---
+    ("language", "typographic"): "the writing system and characteristic script of the language",
+    ("language", "globe"): "a globe highlighting the regions where the language is spoken (no national flag)",
+    # --- Collections / lists (composite of members) ---
+    ("collection", "poster-mix"): "the visual motifs of the collection's members blended into one cohesive scene",
+    ("collection", "composite"): "the visual motifs of the collection's members blended into one cohesive scene",
+    ("list", "poster-mix"): "the visual motifs of the list's members blended into one cohesive scene",
+    # --- Groups ---
+    ("group", "group-photo"): "the group of people as a recognizable ensemble",
+    ("group", "group-portrait"): "the group of people as a recognizable ensemble",
+    ("group", "artistic"): "an emblem representing the group",
+    # --- Topics (keyword-derived; sub-type refines the pick, §9.1) ---
+    ("topic", "plate"): "the most iconic tangible object associated with the topic",
+    ("topic", "portrait"): "a figure representative of the topic",
+    ("topic", "map"): "a clean map for the location topic",
+    ("topic", "landscape"): "a representative skyline or landscape view of the place",
+    ("topic", "artistic"): "an artistic motif evoking the topic",
+    # --- Deaths (cause/manner, tasteful & non-graphic; never a person) ---
+    ("death", "plate"): "a tasteful, non-graphic symbol of the cause or manner of death (no person, nothing distressing)",
+    ("death", "artistic"): "a restrained symbol evoking the cause or manner of death (no person, nothing distressing)",
+}
+
+# Fallback when a (class, representation) pair is not listed above.
+T2T_CLASS_DEFAULT = {
+    "location": "the place as a recognizable setting",
+    "occupation": "the characteristic tools and setting of the role, not a portrait of a person",
+    "character": "the fictional character as a recognizable figure",
+    "award": "a generic award trophy or medal (avoid trademarked real trophies)",
+    "nomination": "a generic award trophy or medal (avoid trademarked real trophies)",
+    "movement": "an iconic object or scene that exemplifies the movement",
+    "technical": "the physical apparatus or material that embodies the technique",
+    "genre": "the iconic objects or setting that signal the genre",
+    "country": "the country as a recognizable place",
+    "language": "the characteristic written script of the language",
+    "collection": "the shared visual motifs of the collection's members",
+    "list": "the shared visual motifs of the list's members",
+    "group": "the group of people as a recognizable ensemble",
+    "topic": "the most iconic tangible thing associated with the topic",
+    "death": "a tasteful, non-graphic symbol of the cause or manner of death (no person)",
+}
+
+
+def _f_subject_rule(strclass, strrepresentation):
+    """The per-entity subject line for the description prompt: representation-specific
+    where the representation forces a framing (flag/map/portrait/...), else the class
+    default, else a generic fallback."""
+    return (T2T_SUBJECT_RULES.get((strclass or "", strrepresentation or ""))
+            or T2T_CLASS_DEFAULT.get(strclass or "")
+            or "the most iconic tangible form of the subject")
+
+
 def f_text_to_text(strname, strsourcetext, strrepresentation, strclass, intdryrun=0, strmodel=None):
     """
     Produce the object description fed verbatim into the image template. The output must
@@ -317,22 +423,18 @@ def f_text_to_text(strname, strsourcetext, strrepresentation, strclass, intdryru
         )
     strprompt = (
         "You are preparing the central subject for an encyclopedic visual-dictionary plate "
-        "of '{0}'.\n"
-        "Write ONE concise description (2-3 sentences) of a TANGIBLE, recognizable subject "
-        "that represents it: the physical object, device, material, or characteristic "
-        "real-world scene most associated with '{0}'. For a film/cinema technical, prefer "
-        "the equipment or film material itself (e.g. a reel or strip of film with visible "
-        "imagery on the frames, a camera, a projector). The subject must fill the "
-        "composition as a concrete thing a person could photograph, with specific named "
-        "parts and a clear arrangement.\n"
-        "Representation hint: '{1}'. If it names a concrete depiction (flag, map, landscape, "
-        "portrait), draw that; if it is generic (e.g. 'plate'), depict the most iconic "
-        "tangible form of the subject.\n"
-        "Do NOT describe it as proportions, ratios, dimensions, measurements, an empty "
-        "frame, a chart, or a diagram. Do NOT mention art style, color palette, lighting, "
-        "background, or aspect ratio.\n\n"
-        "Reference:\n{2}"
-    ).format(strname, strrepresentation, (strsourcetext or "")[:6000])
+        "of '{0}' ({1}).\n"
+        "Write ONE concise description (2-3 sentences) of {2}. Render it as a clear, concrete "
+        "subject that fills the composition, with specific named parts and a clear "
+        "arrangement.\n"
+        "Stay strictly on '{0}': describe only attributes that belong to it; add no unrelated "
+        "objects, scenes, or domains.\n"
+        "Do NOT describe it as proportions, ratios, dimensions, measurements, an empty frame, "
+        "a chart, or a diagram. Do NOT mention art style, color palette, lighting, background, "
+        "or aspect ratio.\n\n"
+        "Reference:\n{3}"
+    ).format(strname, strclass, _f_subject_rule(strclass, strrepresentation),
+             (strsourcetext or "")[:6000])
     return _call_t2t_llm(strprompt, strmodel or strt2tmodel)
 
 
