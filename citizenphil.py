@@ -404,7 +404,13 @@ def f_setservervariable(strvarname,strvarvalue,strvardesc="",lnglang=0):
     None
     """
     global strsqlns
-    
+
+    # VAR_VALUE is varchar(255); guard every write so an over-long value
+    # (e.g. a long SQL query persisted for monitoring) can never trigger
+    # MySQL error 1406 "Data too long for column 'VAR_VALUE'".
+    if isinstance(strvarvalue, str) and len(strvarvalue) > 255:
+        strvarvalue = strvarvalue[:252] + "..."
+
     arrcouples = {}
     arrcouples["VAR_NAME"] = strvarname
     arrcouples["VAR_VALUE"] = strvarvalue
