@@ -31,7 +31,8 @@ import citizenphil as cp
 # ---------------------------------------------------------------------------
 strsqlns = os.environ.get("DB_NAMESPACE", "T_WC_")
 strstyleversion = os.environ.get("STYLE_VERSION", "v1")
-strt2tpromptversion = os.environ.get("T2T_PROMPT_VERSION", "v1")
+strt2tpromptversion = os.environ.get("T2T_PROMPT_VERSION", "v2")
+strt2tsourcemaxchars = int(os.environ.get("T2T_SOURCE_MAXCHARS", "2000"))
 strt2ipromptversion = os.environ.get("T2I_PROMPT_VERSION", "v1")
 strt2tmodel = os.environ.get("T2T_MODEL", "claude-haiku-4-5-20251001")
 strt2imodel = os.environ.get("T2I_MODEL", "black-forest-labs/flux-schnell")
@@ -427,19 +428,21 @@ def f_text_to_text(strname, strsourcetext, strrepresentation, strclass, intdryru
             strname, strclass, strrepresentation
         )
     strprompt = (
-        "You are preparing the central subject for an encyclopedic visual-dictionary plate "
-        "of '{0}' ({1}).\n"
-        "Write ONE concise description (2-3 sentences) of {2}. Render it as a clear, concrete "
-        "subject that fills the composition, with specific named parts and a clear "
-        "arrangement.\n"
+        "You are choosing the SINGLE most emblematic, instantly recognizable form of "
+        "'{0}' ({1}) for an encyclopedic visual-dictionary plate.\n"
+        "Write ONE or TWO short sentences describing {2}. One clear central subject that "
+        "fills the composition. Name only the few defining features that make it recognizable "
+        "at a glance -- favor the iconic whole over an exhaustive parts list.\n"
+        "Keep it simple: at most 2-3 visual elements. Prefer the most common, prototypical "
+        "version; avoid rare variants, internal mechanisms, technical detail, or enumerations.\n"
         "Stay strictly on '{0}': describe only attributes that belong to it; add no unrelated "
         "objects, scenes, or domains.\n"
         "Do NOT describe it as proportions, ratios, dimensions, measurements, an empty frame, "
         "a chart, or a diagram. Do NOT mention art style, color palette, lighting, background, "
         "or aspect ratio.\n\n"
-        "Reference:\n{3}"
+        "Reference (use ONLY to identify the iconic form, do not copy its detail):\n{3}"
     ).format(strname, strclass, _f_subject_rule(strclass, strrepresentation),
-             (strsourcetext or "")[:6000])
+             (strsourcetext or "")[:strt2tsourcemaxchars])
     return _call_t2t_llm(strprompt, strmodel or strt2tmodel)
 
 
@@ -465,8 +468,9 @@ def _call_anthropic(strprompt, strmodel):
         model=strmodel,
         max_tokens=1024,
         system=("You write concise, literal visual object descriptions for an encyclopedic "
-                "illustration pipeline. Respond with the description only -- no preamble, no "
-                "style or color words, no aspect ratio."),
+                "illustration pipeline. Favor simplicity and instant recognizability over "
+                "completeness. Respond with the description only -- no preamble, no style or "
+                "color words, no aspect ratio."),
         messages=[{"role": "user", "content": strprompt}],
     )
     arrparts = [block.text for block in msg.content if getattr(block, "type", "") == "text"]
