@@ -46,6 +46,10 @@ lngmasterheight = int(os.environ.get("MASTER_HEIGHT", "1536"))
 # Approximate per-image unit cost for budget tracking (review §8) -- VERIFY current pricing.
 T2I_COST = {
     "black-forest-labs/flux-schnell": 0.006,
+    "prunaai/z-image-turbo": 0.003,         # Apache-2.0 open weights -- VERIFY current Replicate price
+    "black-forest-labs/flux-2-dev": 0.019,  # ~0.012/MP * 1.57 MP (1024x1536) -- VERIFY
+    "black-forest-labs/flux-2-pro": 0.038,  # ~0.015 + 0.015/MP -- VERIFY
+    "black-forest-labs/flux-2-flex": 0.094, # ~0.06/MP (best typography, slower) -- VERIFY
     "google/nano-banana": 0.039,
     "gemini-2.5-flash-image": 0.039,        # Nano Banana
     "gemini-3-pro-image-preview": 0.145,    # Nano Banana Pro -- MEASURED: EUR 4.93 / 34 imgs (2026-06-10)
@@ -487,19 +491,37 @@ def f_text_to_image(strobjectdescription, lngseed=None, intdryrun=0, strmodel=No
     return _t2i_replicate(strprompt, strt2i, lngseed)
 
 
+def _replicate_input(strmodel, strprompt, lngseed):
+    """Build the per-model Replicate `input` payload. Schemas differ across model families,
+    so keep this the single place that knows each one's keys. VERIFY each against the model's
+    Replicate 'API' tab -- schemas drift. Default stays FLUX.1-schnell for back-compat."""
+    dctin = {
+        "prompt": strprompt,
+        "output_format": "webp",
+        "seed": lngseed if lngseed is not None else 0,
+    }
+    if strmodel.startswith("black-forest-labs/flux-2"):
+        # FLUX.2 dev/pro/flex: aspect_ratio supported, same as FLUX.1.
+        dctin["aspect_ratio"] = straspectratio
+        return dctin
+    if strmodel.startswith("prunaai/z-image"):
+        # Z-Image Turbo: sized by explicit width/height; 8-step distilled model.
+        dctin.update({
+            "width": lngmasterwidth,
+            "height": lngmasterheight,
+            "num_inference_steps": 8,
+        })
+        return dctin
+    # FLUX.1 schnell (current default).
+    dctin["aspect_ratio"] = straspectratio
+    return dctin
+
+
 def _t2i_replicate(strprompt, strmodel, lngseed):
-    """Replicate-hosted model (FLUX.1 schnell, review §8). Returns (webp_bytes, seed, cost)."""
+    """Replicate-hosted model (FLUX.1/2 schnell, Z-Image; review §8). Returns (webp_bytes, seed, cost)."""
     try:
         import replicate
-        arrout = replicate.run(
-            strmodel,
-            input={
-                "prompt": strprompt,
-                "aspect_ratio": straspectratio,
-                "output_format": "webp",
-                "seed": lngseed if lngseed is not None else 0,
-            },
-        )
+        arrout = replicate.run(strmodel, input=_replicate_input(strmodel, strprompt, lngseed))
         return _read_replicate_output(arrout), (lngseed or 0), T2I_COST.get(strmodel, 0.006)
     except Exception as err:
         print("  [t2i] replicate generation failed ({0}): {1}".format(strmodel, err))

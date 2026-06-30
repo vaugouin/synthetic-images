@@ -48,9 +48,19 @@ strtimezone = os.environ.get("USER_TIMEZONE", "Europe/Paris")
 dblbudgetdefault = float(os.environ.get("RUN_BUDGET_USD", "20"))
 
 # Default candidates. t2t: both Anthropic models are wired today (claude-* dispatch); add the
-# OpenAI/Gemini cross-check once those branches land. t2i: only Replicate FLUX is wired.
+# OpenAI/Gemini cross-check once those branches land. t2i: Replicate (FLUX.1/2, Z-Image) + Gemini
+# (Nano Banana / Pro) are wired; narrow with --t2i-models to control cost on a real run.
 T2T_MODELS_DEFAULT = ["claude-haiku-4-5-20251001", "claude-sonnet-4-6"]
-T2I_MODELS_DEFAULT = ["black-forest-labs/flux-schnell"]
+T2I_MODELS_DEFAULT = [
+    "black-forest-labs/flux-schnell",
+    "prunaai/z-image-turbo",
+    "black-forest-labs/flux-2-dev",
+    "black-forest-labs/flux-2-pro",
+]
+# Opt-in only (NOT in the default sweep): flux-2-flex is the priciest t2i candidate (~0.094/img,
+# best typography/detail). Add it explicitly when needed, e.g.
+#   --t2i-models black-forest-labs/flux-2-flex
+T2I_MODELS_OPTIN = ["black-forest-labs/flux-2-flex"]
 
 
 def f_now():

@@ -67,3 +67,6 @@ citizenphilsecrets.py
 
 # Claude Code local tooling (skills, settings) -- not project code
 .claude/
+
+# Claude Code / agent local tooling
+.agents/
