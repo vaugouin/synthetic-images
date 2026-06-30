@@ -50,6 +50,7 @@ T2I_COST = {
     "black-forest-labs/flux-2-dev": 0.019,  # ~0.012/MP * 1.57 MP (1024x1536) -- VERIFY
     "black-forest-labs/flux-2-pro": 0.038,  # ~0.015 + 0.015/MP -- VERIFY
     "black-forest-labs/flux-2-flex": 0.094, # ~0.06/MP (best typography, slower) -- VERIFY
+    "gpt-image-1": 0.04,                    # OpenAI GPT Image, medium quality 1024x1536 -- VERIFY
     "google/nano-banana": 0.039,
     "gemini-2.5-flash-image": 0.039,        # Nano Banana
     "gemini-3-pro-image-preview": 0.145,    # Nano Banana Pro -- MEASURED: EUR 4.93 / 34 imgs (2026-06-10)
@@ -75,7 +76,7 @@ STYLE_TEMPLATE = (
     "Flat lighting, plain off-white textured paper background, encyclopedic "
     "technical-illustration style, soft realistic shading, educational reference "
     "aesthetic, minimalist composition. "
-    "1990s printed visual dictionary style, Jean-Claude Corbeil aesthetic. "
+    "1990s printed visual dictionary style. "
     "Just the illustrated subject on the paper, nothing else: no text, no title, "
     "no caption, no labels, no callouts, no annotations, no leader lines, no arrows, "
     "no legend, no numbers, no letters, no measurement marks, no border. "
@@ -488,6 +489,8 @@ def f_text_to_image(strobjectdescription, lngseed=None, intdryrun=0, strmodel=No
         return _placeholder_image(), (lngseed or 0), 0.0
     if strt2i.startswith("gemini") or "nano-banana" in strt2i:
         return _t2i_gemini(strprompt, strt2i, lngseed)
+    if strt2i.startswith("gpt-image") or strt2i.startswith("dall-e"):
+        return _t2i_openai(strprompt, strt2i, lngseed)
     return _t2i_replicate(strprompt, strt2i, lngseed)
 
 
@@ -557,6 +560,34 @@ def _t2i_gemini(strprompt, strmodel, lngseed):
         return None, (lngseed or 0), 0.0
     except Exception as err:
         print("  [t2i] gemini generation failed ({0}): {1}".format(strmodel, err))
+        return None, (lngseed or 0), 0.0
+
+
+def _t2i_openai(strprompt, strmodel, lngseed):
+    """
+    OpenAI image generation -- GPT Image (gpt-image-1). Uses OPENAI_API_KEY. gpt-image-1 returns
+    base64 PNG and accepts a fixed set of sizes; "1024x1536" is the 2:3 portrait that matches our
+    master. There is NO seed control, so the seed is recorded but not enforced (determinism is
+    FLUX-only). Output is normalised to a 2:3 WebP master. Returns (webp_bytes, seed, cost).
+    """
+    try:
+        import base64
+        from openai import OpenAI
+        client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))
+        rsp = client.images.generate(
+            model=strmodel,
+            prompt=strprompt,
+            size=os.environ.get("OPENAI_IMAGE_SIZE", "1024x1536"),
+            quality=os.environ.get("OPENAI_IMAGE_QUALITY", "medium"),
+            n=1,
+        )
+        strb64 = rsp.data[0].b64_json
+        if strb64:
+            return _to_webp(base64.b64decode(strb64)), (lngseed or 0), T2I_COST.get(strmodel, 0.04)
+        print("  [t2i] openai returned no image for {0} (safety block / refusal?)".format(strmodel))
+        return None, (lngseed or 0), 0.0
+    except Exception as err:
+        print("  [t2i] openai generation failed ({0}): {1}".format(strmodel, err))
         return None, (lngseed or 0), 0.0
 
 
