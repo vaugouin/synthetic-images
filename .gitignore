@@ -35,7 +35,6 @@ ENV/
 .venv/
 
 # IDE files
-.vscode/
 .idea/
 *.swp
 *.swo
