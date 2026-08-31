@@ -1,7 +1,7 @@
 -- =============================================================================
 -- Project A — Synthetic entity illustrations: reference DDL
 --
--- Source spec: "An image for everything - Project A review.md"
+-- Source spec: "an-image-for-everything-project-a-review.md"
 --   §5  data model (two-table design + controlled representation vocabulary)
 --   §4.2 unified model: image identity keyed on ID_WIKIDATA, INSTANCE_OF drives representation
 --   §6  robustness: STATUS dead-letter, IMAGE_KEY + STYLE_VERSION idempotency, seed determinism

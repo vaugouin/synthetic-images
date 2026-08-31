@@ -3,7 +3,7 @@
 --
 -- The controlled representation vocabulary per item class. Derived from:
 --   §4.2  Locations INSTANCE_OF -> representation rule (city->landscape, country->flag/map, ...)
---   source "An image for everything.md" §§93-126 (per-class representation lists)
+--   source "an-image-for-everything.md" §§93-126 (per-class representation lists)
 --   §13   timeline/evolution (Technicals/Movements), poster-mix (Collections/Lists),
 --         award-object IP caveat (prefer last-winner portrait)
 --   decision #7 (companies/networks = pad real logo, no synthesis)

@@ -6,7 +6,7 @@ DB, and exposes the path through the API so `tmdb-front` and `voice-agent` can r
 card grids. This is **Project A** of the "An image for everything" plan.
 
 > Canonical design spec lives in the front-end repo:
-> `tmdb-front/doc/An image for everything/` — read **`An image for everything - Project A review.md`**
+> `%USERPROFILE%/Nestor/projets/t2s-backlog/topics/an-image-for-everything/` — read **`an-image-for-everything-project-a-review.md`**
 > (the executable spec) and **`eval-plan.md`** (the model/prompt bake-off) before changing pipeline behavior.
 
 ## Ecosystem

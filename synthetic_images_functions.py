@@ -1,7 +1,8 @@
 """
 synthetic_images_functions -- two-stage synthetic-illustration pipeline.
 
-Project A of the "An image for everything" plan (see doc/). For one entity it:
+Project A of the "An image for everything" plan (see
+%USERPROFILE%/Nestor/projets/t2s-backlog/topics/an-image-for-everything/). For one entity it:
   1. resolves a text description of the object (Wikipedia/overview -> web-search fallback),
   2. text-to-text: turns that into a pure OBJECT DESCRIPTION (no style words),
   3. text-to-image: renders a style-locked 2:3 WebP via the locked template,

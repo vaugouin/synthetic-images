@@ -3,7 +3,7 @@
 Generate **consistent, style-locked 2:3 card illustrations** for database entities that lack a
 usable image (or whose Wikipedia images vary wildly in style and aspect ratio, breaking card grids).
 Part of the **Agent BBB** multi-repo system; the design spec is
-`tmdb-front/doc/An image for everything/An image for everything - Project A review.md`.
+`%USERPROFILE%/Nestor/projets/t2s-backlog/topics/an-image-for-everything/an-image-for-everything-project-a-review.md`.
 
 For every in-scope entity, a two-stage pipeline produces one synthetic illustration:
 
