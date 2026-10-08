@@ -65,8 +65,11 @@ async function loadConfig() {
     `<option value="${esc(m.id)}"${m.default ? " selected" : ""}>${esc(m.id)} · ${m.price_in}/${m.price_out} $ par M</option>`).join("");
   $("t2iSelect").innerHTML = cfg.t2i.map((m) =>
     `<option value="${esc(m.id)}"${m.default ? " selected" : ""}>${esc(m.id)} · ${money(m.cost)}</option>`).join("");
-  $("nInput").max = cfg.max_renders;
-  $("nInput").value = Math.min(cfg.candidates_default, cfg.max_renders);
+  const options = [];
+  for (let i = 1; i <= cfg.max_renders; i++) {
+    options.push(`<option value="${i}"${i === cfg.candidates_default ? " selected" : ""}>${i}</option>`);
+  }
+  $("nInput").innerHTML = options.join("");
   showBudget(cfg);
 }
 

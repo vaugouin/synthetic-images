@@ -37,6 +37,8 @@ strlabhost = os.environ.get("LAB_HOST", "127.0.0.1")
 lnglabport = int(os.environ.get("LAB_PORT", "8195"))
 dbllabbudget = float(os.environ.get("LAB_DAILY_BUDGET_USD", "5"))
 lnglabmaxrenders = int(os.environ.get("LAB_MAX_RENDERS", "4"))
+# Images per click preselected in the page (the batch keeps CANDIDATES): one, so a first look is cheap.
+lnglabdefaultrenders = int(os.environ.get("LAB_DEFAULT_RENDERS", "1"))
 intlabdryrun = 1 if os.environ.get("LAB_DRY_RUN", "0") == "1" else 0
 strlabdir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "lab")
 
@@ -148,7 +150,7 @@ def config():
     arrclasses = [{"id": strclass, "hint": dctcat.get("hint", "")}
                   for strclass, dctcat in si.ENTITY_CATALOG.items()]
     dctout = {"t2i": arrt2i, "t2t": arrt2t, "classes": arrclasses,
-              "candidates_default": si.lngcandidatesdefault, "max_renders": lnglabmaxrenders,
+              "candidates_default": max(1, min(lnglabdefaultrenders, lnglabmaxrenders)), "max_renders": lnglabmaxrenders,
               "style_version": si.strstyleversion, "dry_run": bool(intlabdryrun)}
     dctout.update(_budget())
     return dctout
@@ -184,7 +186,7 @@ class PreviewIn(BaseModel):
     representation: str = ""
     t2t_model: str = ""
     t2i_model: str = ""
-    n: int = 3
+    n: int = 1
 
 
 @app.post("/api/preview")
@@ -250,7 +252,7 @@ class RenderIn(BaseModel):
     id_description: int
     text: str = ""                  # the description, possibly corrected by hand
     t2i_model: str = ""
-    n: int = 3
+    n: int = 1
 
 
 @app.post("/api/render")
