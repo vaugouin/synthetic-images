@@ -40,6 +40,8 @@ strt2tmodel = os.environ.get("T2T_MODEL", "claude-haiku-5-5")
 # description needs no deep reasoning; "low" keeps adaptive thinking cheap (Haiku 5.5 defaults
 # to "medium").
 strt2teffort = os.environ.get("T2T_EFFORT", "low")
+# Candidates rendered per entity by a batch (SYNTHETIC-IMAGES-019): one description, N renders.
+lngcandidatesdefault = int(os.environ.get("CANDIDATES", "3"))
 strt2imodel = os.environ.get("T2I_MODEL", "black-forest-labs/flux-schnell")
 straspectratio = os.environ.get("ASPECT_RATIO", "2:3")
 lngmasterwidth = int(os.environ.get("MASTER_WIDTH", "1024"))
@@ -142,12 +144,17 @@ def f_identity(stridwikidata, stritemclass, lngiditem):
     return "{0}:{1}".format(stritemclass or "", lngiditem if lngiditem is not None else "")
 
 
-def f_image_key(stridentity, strrepresentation, strstyleversion_):
+def f_image_key(stridentity, strrepresentation, strstyleversion_, lngcandidateindex=1):
     """
     Content/parameter hash. Idempotency keys on (IMAGE_KEY, STYLE_VERSION) (review §6),
     so a style bump produces a new key and the old image can be mass-invalidated.
+    Candidate 1 keeps the historical form, so images produced before candidates existed keep
+    their key; candidates 2..N append "|c<N>" (SYNTHETIC-IMAGES-019).
     """
-    strraw = "|".join([stridentity, strrepresentation or "", strstyleversion_ or ""])
+    arrparts = [stridentity, strrepresentation or "", strstyleversion_ or ""]
+    if lngcandidateindex and int(lngcandidateindex) > 1:
+        arrparts.append("c{0}".format(int(lngcandidateindex)))
+    strraw = "|".join(arrparts)
     return hashlib.sha256(strraw.encode("utf-8")).hexdigest()[:32]
 
 
@@ -158,7 +165,7 @@ def f_now():
 # ---------------------------------------------------------------------------
 # Stage 0 -- resolve a source description for the entity
 # ---------------------------------------------------------------------------
-def f_resolve_source_text(stridwikidata, strname, stroverview, intdryrun=0):
+def f_resolve_source_text(stridwikidata, strname, stroverview, intdryrun=0, strsearchquery=""):
     """
     Return (strtext, strsource). Source priority, most-curated first (review §4.2 / §7):
       1. an explicit OVERVIEW override (what the batch selector already passes) -> 'wikipedia'
@@ -177,7 +184,7 @@ def f_resolve_source_text(stridwikidata, strname, stroverview, intdryrun=0):
     strdbtext, strdbsource = f_db_source_text(stridwikidata)
     if strdbtext:
         return strdbtext, strdbsource
-    strsearched = f_web_search_fallback(strname)
+    strsearched = f_web_search_fallback(strsearchquery or strname)
     if strsearched:
         return strsearched, "websearch"
     return strname or "", "model-knowledge"
@@ -453,19 +460,37 @@ def _f_subject_rule(strclass, strrepresentation):
             or "the most iconic tangible form of the subject")
 
 
-def f_text_to_text(strname, strsourcetext, strrepresentation, strclass, intdryrun=0, strmodel=None):
-    """
-    Produce the object description fed verbatim into the image template. The output must
-    describe ONLY the subject/object (review §2) -- never style, palette, or aspect ratio.
+# System prompt of the description call. Part of the "complete T2T prompt" the lab shows and the
+# description row stores (T_WC_T2S_SYNTHETIC_DESCRIPTION.T2T_PROMPT).
+T2T_SYSTEM = (
+    "You write concise, literal visual object descriptions for an encyclopedic "
+    "illustration pipeline. Favor simplicity and instant recognizability over "
+    "completeness. Respond with the description only -- no preamble, no style or "
+    "color words, no aspect ratio."
+)
 
-    Pluggable: wire the bake-off winner (Anthropic/OpenAI/Gemini) here. Dry-run returns a
-    deterministic stub so the harness works with no API key.
-    """
-    if intdryrun:
-        return "A clear central depiction of {0} ({1}), rendered as a {2}.".format(
-            strname, strclass, strrepresentation
-        )
-    strprompt = (
+# Text-to-text prices, USD per million tokens (input, output), read 2026-10-08. Used to cost each
+# description from the provider's own token counts (SYNTHETIC-IMAGES-019: the description is
+# costed once, in its own row, never spread over the candidates it feeds).
+T2T_PRICE = {
+    "claude-haiku-5-5": (0.10, 0.50),
+    "claude-haiku-4-5-20251001": (1.0, 5.0),
+    "claude-haiku-4-5": (1.0, 5.0),
+    "claude-sonnet-5-5": (2.0, 10.0),
+    "claude-sonnet-4-6": (3.0, 15.0),
+    "claude-opus-5-5": (4.0, 20.0),
+}
+
+
+def f_t2t_cost(strmodel, lnginputtokens, lngoutputtokens):
+    """USD cost of one description call from its token counts (0.0 for an unpriced model)."""
+    dblin, dblout = T2T_PRICE.get(strmodel or "", (0.0, 0.0))
+    return round(((lnginputtokens or 0) * dblin + (lngoutputtokens or 0) * dblout) / 1000000.0, 6)
+
+
+def f_build_t2t_prompt(strname, strsourcetext, strrepresentation, strclass):
+    """The user prompt of the description call, exactly as sent (the lab shows it before any spend)."""
+    return (
         "You are choosing the SINGLE most emblematic, instantly recognizable form of "
         "'{0}' ({1}) for an encyclopedic visual-dictionary plate.\n"
         "Write ONE or TWO short sentences describing {2}. One clear central subject that "
@@ -481,14 +506,42 @@ def f_text_to_text(strname, strsourcetext, strrepresentation, strclass, intdryru
         "Reference (use ONLY to identify the iconic form, do not copy its detail):\n{3}"
     ).format(strname, strclass, _f_subject_rule(strclass, strrepresentation),
              (strsourcetext or "")[:strt2tsourcemaxchars])
-    return _call_t2t_llm(strprompt, strmodel or strt2tmodel)
+
+
+def f_describe_text(strname, strsourcetext, strrepresentation, strclass, intdryrun=0, strmodel=None):
+    """
+    Run the description call and return everything the lab and the description row need:
+    {text, model, prompt, system, input_tokens, output_tokens, cost, seconds}.
+    The output must describe ONLY the subject/object (review §2) -- never style, palette, or
+    aspect ratio. Dry-run returns a deterministic stub so the harness works with no API key.
+    """
+    strmodel = strmodel or strt2tmodel
+    strprompt = f_build_t2t_prompt(strname, strsourcetext, strrepresentation, strclass)
+    dctout = {"model": strmodel, "prompt": strprompt, "system": T2T_SYSTEM,
+              "input_tokens": 0, "output_tokens": 0, "cost": 0.0, "seconds": 0.0}
+    if intdryrun:
+        dctout["text"] = "A clear central depiction of {0} ({1}), rendered as a {2}.".format(
+            strname, strclass, strrepresentation)
+        return dctout
+    dblstart = time.time()
+    dctcall = _call_t2t_llm(strprompt, strmodel)
+    dctout.update(dctcall)
+    dctout["cost"] = f_t2t_cost(strmodel, dctout["input_tokens"], dctout["output_tokens"])
+    dctout["seconds"] = round(time.time() - dblstart, 3)
+    return dctout
+
+
+def f_text_to_text(strname, strsourcetext, strrepresentation, strclass, intdryrun=0, strmodel=None):
+    """Description text only (the bake-off's entry point); see f_describe_text for the full record."""
+    return f_describe_text(strname, strsourcetext, strrepresentation, strclass,
+                           intdryrun=intdryrun, strmodel=strmodel)["text"]
 
 
 def _call_t2t_llm(strprompt, strmodel):
     """
-    LLM call for the description stage. Dispatches by model family and returns plain text.
-    Phase-1 wires Anthropic (claude-*); the OpenAI/Gemini branches are added during the
-    eval-plan.md bake-off (the keys are already in .env). Returns text only -- no preamble.
+    LLM call for the description stage. Dispatches by model family and returns
+    {text, input_tokens, output_tokens}. Phase-1 wires Anthropic (claude-*); the OpenAI/Gemini
+    branches are added during the eval-plan.md bake-off (the keys are already in .env).
     """
     if (strmodel or "").lower().startswith("claude"):
         return _call_anthropic(strprompt, strmodel)
@@ -509,7 +562,8 @@ def _anthropic_supports_effort(strmodel):
 def _call_anthropic(strprompt, strmodel):
     """Anthropic Messages API call. Reads ANTHROPIC_API_KEY from the environment (.env).
     Current models think adaptively by default; max_tokens leaves room for that thinking on top
-    of the ~200-token description, and T2T_EFFORT keeps it small."""
+    of the ~200-token description, and T2T_EFFORT keeps it small. Returns
+    {text, input_tokens, output_tokens} (output tokens include the thinking, billed as output)."""
     from anthropic import Anthropic
     client = Anthropic()
     dctextra = {}
@@ -518,25 +572,29 @@ def _call_anthropic(strprompt, strmodel):
     msg = client.messages.create(
         model=strmodel,
         max_tokens=4096,
-        system=("You write concise, literal visual object descriptions for an encyclopedic "
-                "illustration pipeline. Favor simplicity and instant recognizability over "
-                "completeness. Respond with the description only -- no preamble, no style or "
-                "color words, no aspect ratio."),
+        system=T2T_SYSTEM,
         messages=[{"role": "user", "content": strprompt}],
         **dctextra
     )
+    dctusage = {"input_tokens": getattr(msg.usage, "input_tokens", 0) or 0,
+                "output_tokens": getattr(msg.usage, "output_tokens", 0) or 0}
     if msg.stop_reason == "refusal":
         print("  [t2t] {0} refused the description request".format(strmodel))
-        return ""
+        return dict(dctusage, text="")
     if msg.stop_reason == "max_tokens":
         print("  [t2t] {0} hit max_tokens; the description may be truncated".format(strmodel))
     arrparts = [block.text for block in msg.content if getattr(block, "type", "") == "text"]
-    return "\n".join(arrparts).strip()
+    return dict(dctusage, text="\n".join(arrparts).strip())
 
 
 # ---------------------------------------------------------------------------
 # Stage 2 -- text-to-image: object description -> style-locked image bytes
 # ---------------------------------------------------------------------------
+def f_build_t2i_prompt(strobjectdescription):
+    """The complete text-to-image prompt, exactly as sent (stored as T2I_PROMPT, shown by the lab)."""
+    return STYLE_TEMPLATE.format(object_description=strobjectdescription)
+
+
 def f_text_to_image(strobjectdescription, lngseed=None, intdryrun=0, strmodel=None):
     """
     Render the locked template + object description to WebP bytes. Returns (bytesimage, seed,
@@ -545,7 +603,7 @@ def f_text_to_image(strobjectdescription, lngseed=None, intdryrun=0, strmodel=No
     placeholder so storage + validation run offline. strmodel overrides T2I_MODEL (bake-off).
     """
     strt2i = strmodel or strt2imodel
-    strprompt = STYLE_TEMPLATE.format(object_description=strobjectdescription)
+    strprompt = f_build_t2i_prompt(strobjectdescription)
     if intdryrun:
         return _placeholder_image(), (lngseed or 0), 0.0
     if strt2i in T2I_RETIRED:
@@ -784,22 +842,91 @@ def f_store_image(bytesimage, stritemclass, strimagekey):
 # ---------------------------------------------------------------------------
 def f_record_image(arrimage, arrmapping):
     """
-    Upsert one T_WC_T2S_SYNTHETIC_IMAGE row (unique on IMAGE_KEY) and its
-    T_WC_T2S_ENTITY_IMAGE mapping row (unique on the occurrence). Uses the shared
-    citizenphil layer; standard audit fields are added automatically.
+    Upsert one T_WC_T2S_SYNTHETIC_IMAGE row (unique on IMAGE_KEY), then point the entity's
+    T_WC_T2S_ENTITY_IMAGE row at it through f_set_entity_choice, which never overrides a choice
+    made by hand in the lab (SYNTHETIC-IMAGES-019) and never duplicates the row when
+    ID_WIKIDATA is NULL (a NULL defeats the occurrence UNIQUE key, so an upsert would insert).
     """
     cp.f_sqlbulkupsert(strsqlns + "T2S_SYNTHETIC_IMAGE", [arrimage], ["IMAGE_KEY"], 1)
     idimage = cp.f_fieldfromquery(
         "SELECT ID_SYNTHETIC_IMAGE FROM " + strsqlns + "T2S_SYNTHETIC_IMAGE WHERE IMAGE_KEY=%s",
         "ID_SYNTHETIC_IMAGE", params=(arrimage["IMAGE_KEY"],),
     )
-    if idimage:
-        arrmapping["ID_SYNTHETIC_IMAGE"] = idimage
-        cp.f_sqlbulkupsert(
-            strsqlns + "T2S_ENTITY_IMAGE", [arrmapping],
-            ["ITEM_CLASS", "ID_ITEM", "ID_WIKIDATA", "REPRESENTATION"], 1,
+    if idimage and arrimage.get("STATUS") == "generated":
+        f_set_entity_choice(
+            arrmapping.get("ITEM_CLASS"), arrmapping.get("ID_ITEM"), arrmapping.get("ID_WIKIDATA"),
+            arrmapping.get("REPRESENTATION"), idimage, intmanual=0,
+            intcandidateindex=arrimage.get("CANDIDATE_INDEX") or 1,
         )
     return idimage
+
+
+def f_set_entity_choice(stritemclass, lngiditem, stridwikidata, strrepresentation, idimage,
+                        intmanual=0, intcandidateindex=1):
+    """
+    Point the entity's mapping row at image `idimage` (IS_CHOSEN=1). Returns (id_row, changed).
+
+    Automatic calls (intmanual=0, the pipeline) only claim the slot when the entity has no row
+    yet, or for candidate 1 when the current choice was not made by hand: candidate 1 is served
+    as soon as a batch has produced it, and a style bump still moves the automatic choice to the
+    new candidate 1. A manual call (the lab's "Choose") always wins and sets IS_MANUAL_CHOICE=1,
+    which no later batch undoes.
+    """
+    conn = cp.f_getconnection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT ID_ROW, IS_MANUAL_CHOICE, ID_SYNTHETIC_IMAGE FROM " + strsqlns + "T2S_ENTITY_IMAGE "
+        "WHERE ITEM_CLASS=%s AND ID_ITEM<=>%s AND ID_WIKIDATA<=>%s AND REPRESENTATION=%s "
+        "AND (DELETED IS NULL OR DELETED=0) ORDER BY ID_ROW LIMIT 1",
+        (stritemclass, lngiditem, stridwikidata or None, strrepresentation),
+    )
+    arrrow = cur.fetchone()
+    strnow = f_now()
+    if arrrow:
+        if not intmanual and (arrrow.get("IS_MANUAL_CHOICE") or int(intcandidateindex or 1) != 1):
+            return arrrow["ID_ROW"], False
+        cur.execute(
+            "UPDATE " + strsqlns + "T2S_ENTITY_IMAGE SET ID_SYNTHETIC_IMAGE=%s, IS_CHOSEN=1, "
+            "IS_MANUAL_CHOICE=%s, TIM_UPDATED=%s WHERE ID_ROW=%s",
+            (idimage, 1 if intmanual else 0, strnow, arrrow["ID_ROW"]),
+        )
+        conn.commit()
+        return arrrow["ID_ROW"], True
+    cur.execute(
+        "INSERT INTO " + strsqlns + "T2S_ENTITY_IMAGE (ITEM_CLASS, ID_ITEM, ID_WIKIDATA, "
+        "REPRESENTATION, ID_SYNTHETIC_IMAGE, IS_CHOSEN, IS_MANUAL_CHOICE, DELETED, DAT_CREAT, "
+        "TIM_UPDATED) VALUES (%s, %s, %s, %s, %s, 1, %s, 0, %s, %s)",
+        (stritemclass, lngiditem, stridwikidata or None, strrepresentation, idimage,
+         1 if intmanual else 0, strnow[:10], strnow),
+    )
+    conn.commit()
+    return cur.lastrowid, True
+
+
+def f_record_description(dctprep, dctdesc):
+    """
+    One T_WC_T2S_SYNTHETIC_DESCRIPTION row per description call (SYNTHETIC-IMAGES-019): the
+    complete T2T prompt and its cost live here once, and every candidate rendered from the
+    description points at it. Returns ID_SYNTHETIC_DESCRIPTION.
+    """
+    conn = cp.f_getconnection()
+    cur = conn.cursor()
+    strnow = f_now()
+    cur.execute(
+        "INSERT INTO " + strsqlns + "T2S_SYNTHETIC_DESCRIPTION (ITEM_CLASS, ID_ITEM, ID_WIKIDATA, "
+        "REPRESENTATION, ENTITY_NAME, OBJECT_DESCRIPTION, IS_EDITED, T2T_LLM, T2T_PROMPT_VERSION, "
+        "T2T_SYSTEM, T2T_PROMPT, SOURCE, SOURCE_URL, INPUT_TOKENS, OUTPUT_TOKENS, T2T_COST, "
+        "GENERATION_TIME, TIM_GENERATED, DELETED, DAT_CREAT, TIM_UPDATED) "
+        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,0,%s,%s)",
+        (dctprep.get("item_class"), dctprep.get("id_item"), dctprep.get("id_wikidata") or None,
+         dctprep.get("representation"), dctprep.get("name"), dctdesc.get("text"),
+         1 if dctdesc.get("is_edited") else 0, dctdesc.get("model"), strt2tpromptversion,
+         dctdesc.get("system"), dctdesc.get("prompt"), dctprep.get("source"),
+         dctprep.get("source_url"), dctdesc.get("input_tokens"), dctdesc.get("output_tokens"),
+         dctdesc.get("cost"), dctdesc.get("seconds"), strnow, strnow[:10], strnow),
+    )
+    conn.commit()
+    return cur.lastrowid
 
 
 def f_existing_image_key(strimagekey, strstyleversion_):
@@ -811,88 +938,307 @@ def f_existing_image_key(strimagekey, strstyleversion_):
     )
 
 
+def f_next_candidate_indexes(stridentity, strrepresentation, lngcount):
+    """The next `lngcount` candidate indexes whose IMAGE_KEY is still free (the lab appends;
+    it never overwrites an earlier candidate, whatever its status)."""
+    arrindexes, lngindex = [], 1
+    while len(arrindexes) < lngcount and lngindex < 1000:
+        if not cp.f_fieldfromquery(
+            "SELECT ID_SYNTHETIC_IMAGE FROM " + strsqlns + "T2S_SYNTHETIC_IMAGE WHERE IMAGE_KEY=%s",
+            "ID_SYNTHETIC_IMAGE",
+            params=(f_image_key(stridentity, strrepresentation, strstyleversion, lngindex),),
+        ):
+            arrindexes.append(lngindex)
+        lngindex += 1
+    return arrindexes
+
+
+def f_spent_today():
+    """USD spent today on renders and descriptions (the lab's daily ceiling reads this)."""
+    dblimages = cp.f_fieldfromquery(
+        "SELECT COALESCE(SUM(GENERATION_COST),0) AS S FROM " + strsqlns + "T2S_SYNTHETIC_IMAGE "
+        "WHERE TIM_GENERATED >= CURDATE()", "S") or 0
+    dbldesc = cp.f_fieldfromquery(
+        "SELECT COALESCE(SUM(T2T_COST),0) AS S FROM " + strsqlns + "T2S_SYNTHETIC_DESCRIPTION "
+        "WHERE TIM_GENERATED >= CURDATE()", "S") or 0
+    return round(float(dblimages) + float(dbldesc), 4)
+
+
 # ---------------------------------------------------------------------------
-# The single-item harness (review §2 "primary dev loop")
+# Entity catalogue -- what the lab can pick, per class (SYNTHETIC-IMAGES-020)
+# ---------------------------------------------------------------------------
+# class -> table, id column, name expression, Q-id column, overview column, order, web-search hint.
+# Only classes rendered by the synthetic (text -> text -> image) path; companies and networks pad
+# their real logo, lists and collections wait for the poster-mix renderer (-012 / -015).
+ENTITY_CATALOG = {
+    "technical": {"table": "T2S_TECHNICAL", "id": "ID_TECHNICAL",
+                  "name": "COALESCE(NULLIF(WIKIDATA_LABEL,''), DESCRIPTION)", "wikidata": "ID_WIKIDATA",
+                  "overview": "OVERVIEW", "order": "POPULARITY DESC", "hint": "film technique"},
+    "genre": {"table": "TMDB_GENRE", "id": "id", "name": "name", "wikidata": None,
+              "overview": None, "order": "name", "deleted": False, "hint": "film genre",
+              "extra": "APPLIES_TO_MOVIE, APPLIES_TO_SERIE"},
+    "location": {"table": "T2S_LOCATION", "id": "ID_LOCATION", "name": "LOCATION_NAME",
+                 "wikidata": "ID_WIKIDATA", "overview": "OVERVIEW", "order": "POPULARITY DESC"},
+    "topic": {"table": "T2S_TOPIC", "id": "ID_TOPIC", "name": "TOPIC_NAME",
+              "wikidata": "ID_WIKIDATA", "overview": "OVERVIEW", "order": "POPULARITY DESC"},
+    "movement": {"table": "T2S_MOVEMENT", "id": "ID_MOVEMENT", "name": "MOVEMENT_NAME",
+                 "wikidata": "ID_WIKIDATA", "overview": "OVERVIEW", "order": "POPULARITY DESC",
+                 "hint": "film movement"},
+    "award": {"table": "T2S_AWARD", "id": "ID_AWARD", "name": "AWARD_NAME",
+              "wikidata": "ID_WIKIDATA", "overview": "OVERVIEW", "order": "POPULARITY DESC",
+              "hint": "film award"},
+    "nomination": {"table": "T2S_NOMINATION", "id": "ID_NOMINATION", "name": "NOMINATION_NAME",
+                   "wikidata": "ID_WIKIDATA", "overview": "OVERVIEW", "order": "POPULARITY DESC",
+                   "hint": "film award category"},
+    "group": {"table": "T2S_GROUP", "id": "ID_GROUP", "name": "GROUP_NAME",
+              "wikidata": "ID_WIKIDATA", "overview": "OVERVIEW", "order": "POPULARITY DESC"},
+    "death": {"table": "T2S_DEATH", "id": "ID_DEATH", "name": "DEATH_NAME",
+              "wikidata": "ID_WIKIDATA", "overview": "OVERVIEW", "order": "POPULARITY DESC",
+              "hint": "cause of death"},
+}
+
+
+def _catalog_select(dctcat):
+    arrcols = ["{0} AS id_item".format(dctcat["id"]), "{0} AS name".format(dctcat["name"]),
+               "{0} AS id_wikidata".format(dctcat["wikidata"] or "NULL"),
+               "{0} AS overview".format(dctcat["overview"] or "NULL")]
+    if dctcat.get("extra"):
+        arrcols.append(dctcat["extra"])
+    strwhere = "(DELETED IS NULL OR DELETED=0)" if dctcat.get("deleted", True) else "1=1"
+    return "SELECT " + ", ".join(arrcols) + " FROM " + strsqlns + dctcat["table"], strwhere
+
+
+def f_search_entities(stritemclass, strquery="", lnglimit=50, arrids=None):
+    """Entities of a class, by name substring or by id list, most used first."""
+    dctcat = ENTITY_CATALOG.get(stritemclass)
+    if not dctcat:
+        return []
+    strsql, strwhere = _catalog_select(dctcat)
+    arrparams = []
+    if arrids:
+        strwhere += " AND {0} IN ({1})".format(dctcat["id"], ",".join(["%s"] * len(arrids)))
+        arrparams.extend(arrids)
+    if strquery:
+        strwhere += " AND {0} LIKE %s".format(dctcat["name"])
+        arrparams.append("%" + strquery + "%")
+    strsql += " WHERE " + strwhere + " ORDER BY " + dctcat["order"]
+    strsql += " LIMIT {0}".format(max(1, min(int(lnglimit or 50), 500)))
+    cur = cp.f_getconnection().cursor()
+    cur.execute(strsql, tuple(arrparams))
+    return cur.fetchall() or []
+
+
+def f_get_entity(stritemclass, lngiditem):
+    arrrows = f_search_entities(stritemclass, arrids=[lngiditem], lnglimit=1)
+    return arrrows[0] if arrrows else None
+
+
+def f_default_representation(stritemclass):
+    """The class default from the representation vocabulary, else 'plate'."""
+    try:
+        strrep = cp.f_fieldfromquery(
+            "SELECT REPRESENTATION FROM " + strsqlns + "T2S_REPRESENTATION "
+            "WHERE ITEM_CLASS=%s AND IS_CHOSEN_DEFAULT=1 AND (DELETED IS NULL OR DELETED=0) LIMIT 1",
+            "REPRESENTATION", params=(stritemclass,),
+        )
+    except Exception as err:
+        print("  [representation] lookup failed for {0}: {1}".format(stritemclass, err))
+        strrep = ""
+    return strrep or "plate"
+
+
+def f_list_representations(stritemclass):
+    cur = cp.f_getconnection().cursor()
+    cur.execute(
+        "SELECT REPRESENTATION, REPRESENTATION_NAME, IS_CHOSEN_DEFAULT FROM " + strsqlns +
+        "T2S_REPRESENTATION WHERE ITEM_CLASS=%s AND (DELETED IS NULL OR DELETED=0) "
+        "AND REPRESENTATION<>'logo-pad' ORDER BY FALLBACK_ORDER", (stritemclass,))
+    return cur.fetchall() or []
+
+
+def f_list_candidates(stritemclass, arriditems):
+    """Candidates and current choice for a set of entities: {id_item: {"candidates": [...], "chosen": id, "manual": 0/1}}."""
+    dctout = {lngid: {"candidates": [], "chosen": None, "manual": 0} for lngid in arriditems}
+    if not arriditems:
+        return dctout
+    strin = ",".join(["%s"] * len(arriditems))
+    cur = cp.f_getconnection().cursor()
+    cur.execute(
+        "SELECT SI.ID_SYNTHETIC_IMAGE, SI.ID_ITEM, SI.CANDIDATE_INDEX, SI.IMAGE_PATH, SI.STATUS, "
+        "SI.IS_VALIDATED, SI.FAILURE_REASON, SI.T2I_MODEL, SI.T2T_LLM, SI.GENERATION_COST, "
+        "SI.OBJECT_DESCRIPTION, SI.T2I_PROMPT, SI.REPRESENTATION, SI.T2I_SEED, SI.STYLE_VERSION, "
+        "SI.ID_SYNTHETIC_DESCRIPTION, DATE_FORMAT(SI.TIM_GENERATED, '%%Y-%%m-%%d %%H:%%i') AS TIM_GENERATED "
+        "FROM " + strsqlns + "T2S_SYNTHETIC_IMAGE SI WHERE SI.ITEM_CLASS=%s AND SI.ID_ITEM IN (" + strin + ") "
+        "AND (SI.DELETED IS NULL OR SI.DELETED=0) ORDER BY SI.ID_ITEM, SI.TIM_GENERATED, SI.CANDIDATE_INDEX",
+        tuple([stritemclass] + list(arriditems)))
+    for arr in cur.fetchall() or []:
+        if arr["ID_ITEM"] in dctout:
+            dctout[arr["ID_ITEM"]]["candidates"].append(arr)
+    cur.execute(
+        "SELECT ID_ITEM, ID_SYNTHETIC_IMAGE, IS_MANUAL_CHOICE FROM " + strsqlns + "T2S_ENTITY_IMAGE "
+        "WHERE ITEM_CLASS=%s AND ID_ITEM IN (" + strin + ") AND IS_CHOSEN=1 "
+        "AND (DELETED IS NULL OR DELETED=0)", tuple([stritemclass] + list(arriditems)))
+    for arr in cur.fetchall() or []:
+        if arr["ID_ITEM"] in dctout:
+            dctout[arr["ID_ITEM"]]["chosen"] = arr["ID_SYNTHETIC_IMAGE"]
+            dctout[arr["ID_ITEM"]]["manual"] = arr.get("IS_MANUAL_CHOICE") or 0
+    return dctout
+
+
+def f_get_image(idimage):
+    cur = cp.f_getconnection().cursor()
+    cur.execute(
+        "SELECT ID_SYNTHETIC_IMAGE, ITEM_CLASS, ID_ITEM, ID_WIKIDATA, REPRESENTATION, STATUS, "
+        "IS_VALIDATED FROM " + strsqlns + "T2S_SYNTHETIC_IMAGE WHERE ID_SYNTHETIC_IMAGE=%s", (idimage,))
+    return cur.fetchone()
+
+
+# ---------------------------------------------------------------------------
+# The pipeline in three steps: prepare -> describe -> render candidates
+# ---------------------------------------------------------------------------
+def f_prepare_entity(stritemclass=None, lngiditem=None, stridwikidata=None, strname="",
+                     stroverview="", strrepresentation="", intdryrun=0):
+    """
+    Everything known before any model call: identity, representation, name, and the source text
+    the description will read. No spend. The lab's preview is this plus the prompts it implies.
+    """
+    dctcat = ENTITY_CATALOG.get(stritemclass or "", {})
+    if lngiditem is not None and dctcat and not intdryrun and not (strname and (stroverview or stridwikidata)):
+        arrentity = f_get_entity(stritemclass, lngiditem)
+        if arrentity:
+            strname = strname or str(arrentity.get("name") or "")
+            stroverview = stroverview or str(arrentity.get("overview") or "")
+            stridwikidata = stridwikidata or arrentity.get("id_wikidata")
+    if not strrepresentation:
+        strrepresentation = "plate" if intdryrun else f_default_representation(stritemclass)
+    strquery = (strname + " " + dctcat.get("hint", "")).strip() if strname else ""
+    strsourcetext, strsource = f_resolve_source_text(stridwikidata, strname, stroverview,
+                                                     intdryrun=intdryrun, strsearchquery=strquery)
+    return {
+        "item_class": stritemclass, "id_item": lngiditem, "id_wikidata": stridwikidata or None,
+        "name": strname, "representation": strrepresentation,
+        "identity": f_identity(stridwikidata, stritemclass, lngiditem),
+        "source_text": strsourcetext, "source": strsource, "source_url": None,
+    }
+
+
+def f_render_bytes(strobjectdescription, strt2imodelused, lngseed, intdryrun=0):
+    """One provider render, no DB access (safe to run in parallel). Returns a dict."""
+    dblstart = time.time()
+    bytesimage, lngseedused, dblcost = f_text_to_image(
+        strobjectdescription, lngseed=lngseed, intdryrun=intdryrun, strmodel=strt2imodelused)
+    return {"bytes": bytesimage, "seed": lngseedused, "cost": dblcost,
+            "seconds": round(time.time() - dblstart, 3), "model": strt2imodelused}
+
+
+def f_persist_candidate(dctprep, dctdesc, iddescription, lngindex, dctrender, intdryrun=0):
+    """Validate, store and record one rendered candidate. Returns the result dict."""
+    strimagekey = f_image_key(dctprep["identity"], dctprep["representation"], strstyleversion, lngindex)
+    intok, strreason, w, h = f_validate_image(dctrender["bytes"])
+    strstatus = "generated" if intok else "failed"
+    strrelpath, lngsize = ("", 0)
+    if intok:
+        strrelpath, lngsize = f_store_image(dctrender["bytes"], dctprep["item_class"], strimagekey)
+    arrimage = {
+        "IMAGE_KEY": strimagekey,
+        "ITEM_CLASS": dctprep["item_class"], "ID_ITEM": dctprep["id_item"],
+        "ID_WIKIDATA": dctprep["id_wikidata"] or None,
+        "CANDIDATE_INDEX": lngindex, "ID_SYNTHETIC_DESCRIPTION": iddescription,
+        "REPRESENTATION": dctprep["representation"],
+        "IMAGE_PATH": strrelpath or None,
+        "WIDTH": w or None, "HEIGHT": h or None,
+        "ASPECT_RATIO": straspectratio, "FORMAT": "webp", "FILE_SIZE": lngsize or None,
+        "OBJECT_DESCRIPTION": dctdesc.get("text"),
+        "T2I_PROMPT": f_build_t2i_prompt(dctdesc.get("text") or ""),
+        "T2T_LLM": dctdesc.get("model"), "T2T_PROMPT_VERSION": strt2tpromptversion,
+        "T2I_MODEL": dctrender["model"], "T2I_PROMPT_VERSION": strt2ipromptversion,
+        "T2I_SEED": dctrender["seed"], "STYLE_VERSION": strstyleversion,
+        "SOURCE": dctprep.get("source"),
+        "STATUS": strstatus, "IS_VALIDATED": 1 if intok else 0,
+        "FAILURE_REASON": (strreason or "no image returned") if not intok else None,
+        "GENERATION_COST": dctrender["cost"], "GENERATION_TIME": dctrender["seconds"],
+        "TIM_GENERATED": f_now(),
+    }
+    arrmapping = {"ITEM_CLASS": dctprep["item_class"], "ID_ITEM": dctprep["id_item"],
+                  "ID_WIKIDATA": dctprep["id_wikidata"] or None,
+                  "REPRESENTATION": dctprep["representation"]}
+    idimage = None if intdryrun else f_record_image(arrimage, arrmapping)
+    return {"status": strstatus, "candidate_index": lngindex, "image_key": strimagekey,
+            "id_synthetic_image": idimage, "image_path": strrelpath, "cost": dctrender["cost"],
+            "seconds": dctrender["seconds"], "model": dctrender["model"], "seed": dctrender["seed"],
+            "failure_reason": arrimage["FAILURE_REASON"]}
+
+
+def f_render_candidates(dctprep, dctdesc, iddescription, arrindexes, strt2imodelused=None,
+                        lngseed=None, intdryrun=0):
+    """Render one candidate per index (provider calls in parallel), then persist them in order."""
+    import random
+    from concurrent.futures import ThreadPoolExecutor
+    strt2imodelused = strt2imodelused or strt2imodel
+    arrseeds = [(lngseed + i) if lngseed is not None else random.randint(1, 2147483646)
+                for i in range(len(arrindexes))]
+    with ThreadPoolExecutor(max_workers=max(1, min(len(arrindexes), 4))) as pool:
+        arrrenders = list(pool.map(
+            lambda lngseedone: f_render_bytes(dctdesc.get("text") or "", strt2imodelused,
+                                              lngseedone, intdryrun), arrseeds))
+    return [f_persist_candidate(dctprep, dctdesc, iddescription, lngindex, dctrender, intdryrun)
+            for lngindex, dctrender in zip(arrindexes, arrrenders)]
+
+
+# ---------------------------------------------------------------------------
+# The single-item harness (review §2 "primary dev loop") and the batch unit
 # ---------------------------------------------------------------------------
 def f_generate_synthetic_image(
     stridwikidata=None, stritemclass=None, lngiditem=None, strname="",
     stroverview="", strrepresentation="plate", lngseed=None,
-    intdryrun=0, intforce=0,
+    intdryrun=0, intforce=0, intcandidates=None, strt2tmodelused=None, strt2imodelused=None,
 ):
     """
-    Generate (or resume) one synthetic illustration for a single entity occurrence.
+    Generate (or resume) the candidates 1..N of one entity occurrence (N = CANDIDATES, default 3,
+    SYNTHETIC-IMAGES-019): one description, N renders. Candidates already generated are skipped
+    unless forced. Candidate 1 is served as soon as it exists, unless a choice was made by hand.
 
     Returns a result dict with STATUS and the IDs/paths involved. This is the function the
-    batch driver loops over AND the function used to test one item with explicit params
-    (the source doc's required test harness).
+    batch driver loops over AND the function used to test one item with explicit params.
     """
-    arrmessages = []
+    lngcandidates = int(intcandidates or lngcandidatesdefault)
     stridentity = f_identity(stridwikidata, stritemclass, lngiditem)
-    strimagekey = f_image_key(stridentity, strrepresentation, strstyleversion)
-
-    # 1. Idempotency / resume (review §6): skip unless forced.
+    arrindexes = list(range(1, max(1, lngcandidates) + 1))
     if not intforce:
-        idexisting = f_existing_image_key(strimagekey, strstyleversion)
-        if idexisting:
-            return {"status": "skipped", "reason": "exists", "image_key": strimagekey,
-                    "id_synthetic_image": idexisting, "messages": ["already generated"]}
+        arrindexes = [i for i in arrindexes if not f_existing_image_key(
+            f_image_key(stridentity, strrepresentation, strstyleversion, i), strstyleversion)]
+        if not arrindexes:
+            return {"status": "skipped", "reason": "exists", "cost": 0.0,
+                    "image_key": f_image_key(stridentity, strrepresentation, strstyleversion),
+                    "messages": ["already generated"]}
 
-    # 2. Stage 0 -> source text, Stage 1 -> object description.
-    strsourcetext, strsource = f_resolve_source_text(stridwikidata, strname, stroverview, intdryrun=intdryrun)
-    arrmessages.append("source={0}".format(strsource))
-    strobjectdescription = f_text_to_text(
-        strname, strsourcetext, strrepresentation, stritemclass, intdryrun=intdryrun
-    )
-
-    # 3. Stage 2 -> image bytes.
-    dblstart = time.time()
-    bytesimage, lngseedused, dblcost = f_text_to_image(
-        strobjectdescription, lngseed=lngseed, intdryrun=intdryrun
-    )
-    dblelapsed = round(time.time() - dblstart, 3)
-
-    # 4. Validation gate.
-    intok, strreason, w, h = f_validate_image(bytesimage)
-    strstatus = "generated" if intok else "failed"
-    strrelpath, lngsize = ("", 0)
-    if intok:
-        strrelpath, lngsize = f_store_image(bytesimage, stritemclass, strimagekey)
-    else:
-        arrmessages.append("validation: {0}".format(strreason))
-
-    # 5. Persist provenance + mapping.
-    arrimage = {
-        "IMAGE_KEY": strimagekey,
-        "ID_WIKIDATA": stridwikidata or None,
-        "REPRESENTATION": strrepresentation,
-        "IMAGE_PATH": strrelpath or None,
-        "WIDTH": w or None, "HEIGHT": h or None,
-        "ASPECT_RATIO": straspectratio, "FORMAT": "webp", "FILE_SIZE": lngsize or None,
-        "OBJECT_DESCRIPTION": strobjectdescription,
-        "T2T_LLM": strt2tmodel, "T2T_PROMPT_VERSION": strt2tpromptversion,
-        "T2I_MODEL": strt2imodel, "T2I_PROMPT_VERSION": strt2ipromptversion,
-        "T2I_SEED": lngseedused, "STYLE_VERSION": strstyleversion,
-        "SOURCE": strsource,
-        "STATUS": strstatus, "IS_VALIDATED": 1 if intok else 0,
-        "FAILURE_REASON": (strreason or None) if not intok else None,
-        "GENERATION_COST": dblcost, "GENERATION_TIME": dblelapsed,
-        "TIM_GENERATED": f_now(),
-    }
-    arrmapping = {
-        "ITEM_CLASS": stritemclass, "ID_ITEM": lngiditem, "ID_WIKIDATA": stridwikidata or None,
-        "REPRESENTATION": strrepresentation, "IS_CHOSEN": 1,
-    }
-
-    idimage = None
+    dctprep = f_prepare_entity(stritemclass, lngiditem, stridwikidata, strname, stroverview,
+                               strrepresentation, intdryrun=intdryrun)
+    dctdesc = f_describe_text(dctprep["name"], dctprep["source_text"], dctprep["representation"],
+                              stritemclass, intdryrun=intdryrun, strmodel=strt2tmodelused)
+    arrmessages = ["source={0}".format(dctprep["source"])]
+    if not (dctdesc.get("text") or "").strip():
+        return {"status": "failed", "cost": dctdesc.get("cost", 0.0), "image_key": "",
+                "messages": arrmessages + ["empty description"]}
+    iddescription = None if intdryrun else f_record_description(dctprep, dctdesc)
+    arrresults = f_render_candidates(dctprep, dctdesc, iddescription, arrindexes,
+                                     strt2imodelused=strt2imodelused, lngseed=lngseed,
+                                     intdryrun=intdryrun)
+    arrok = [r for r in arrresults if r["status"] == "generated"]
+    for r in arrresults:
+        if r["status"] != "generated":
+            arrmessages.append("candidate {0}: {1}".format(r["candidate_index"], r["failure_reason"]))
     if intdryrun:
         arrmessages.append("dry-run: not persisted")
-    else:
-        idimage = f_record_image(arrimage, arrmapping)
-
     return {
-        "status": strstatus, "image_key": strimagekey, "id_synthetic_image": idimage,
-        "image_path": strrelpath, "cost": dblcost, "seconds": dblelapsed,
-        "object_description": strobjectdescription, "messages": arrmessages,
+        "status": "generated" if arrok else "failed",
+        "image_key": (arrok or arrresults)[0]["image_key"],
+        "id_synthetic_image": arrok[0]["id_synthetic_image"] if arrok else None,
+        "image_path": arrok[0]["image_path"] if arrok else "",
+        "candidates": arrresults, "id_synthetic_description": iddescription,
+        "cost": round(dctdesc.get("cost", 0.0) + sum(r["cost"] or 0.0 for r in arrresults), 6),
+        "seconds": sum(r["seconds"] for r in arrresults),
+        "object_description": dctdesc.get("text"), "messages": arrmessages,
     }
 
 
@@ -1059,6 +1405,7 @@ def f_pad_logo_image(stritemclass=None, lngiditem=None, strname="", strlogopath=
     #    'pillow-logo-pad' marks the rows so the corpus can be filtered by generator.
     arrimage = {
         "IMAGE_KEY": strimagekey,
+        "ITEM_CLASS": stritemclass, "ID_ITEM": lngiditem, "CANDIDATE_INDEX": 1,
         "ID_WIKIDATA": None,
         "REPRESENTATION": "logo-pad",
         "IMAGE_PATH": strrelpath or None,

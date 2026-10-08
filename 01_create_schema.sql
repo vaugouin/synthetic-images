@@ -11,6 +11,10 @@
 -- Conventions follow doc/sql/T2S-tables.sql: backticked names, int(11) surrogate PKs,
 -- the standard audit block, single-column KEY indexes, utf8mb4 / utf8mb4_general_ci, InnoDB.
 -- These three tables live in the shared vaugouindb alongside the other T_WC_T2S_* tables.
+--
+-- NOT the complete schema any more: 03_candidates_migration.sql (2026-10-08) adds the
+-- candidate columns, T_WC_T2S_SYNTHETIC_DESCRIPTION and IS_MANUAL_CHOICE. It is idempotent,
+-- so a fresh install runs 01, 02, then 03.
 -- =============================================================================
 
 SET NAMES utf8mb4;

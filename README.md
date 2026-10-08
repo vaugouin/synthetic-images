@@ -5,7 +5,8 @@ usable image (or whose Wikipedia images vary wildly in style and aspect ratio, b
 Part of the **Agent BBB** multi-repo system; the design spec is
 `%USERPROFILE%/Nestor/projets/t2s-backlog/topics/an-image-for-everything/an-image-for-everything-project-a-review.md`.
 
-For every in-scope entity, a two-stage pipeline produces one synthetic illustration:
+For every in-scope entity, a two-stage pipeline produces **candidates** (3 by default: one
+description, three renders); one of them is served, and the lab below chooses which:
 
 ```
 entity ─▶ resolve source text (Wikipedia / overview ─▶ web-search fallback)
@@ -44,6 +45,38 @@ docker run --rm --network="host" --env-file .env -v $HOME/docker/shared_data/syn
   synthetic-images-python-app python ./synthetic-images.py --class technical --limit 10       # real run, capped
 ```
 
+## The lab: choose a model, see the prompts, render, choose (SYNTHETIC-IMAGES-020)
+
+`synthetic_images_lab.py` is a small FastAPI service with its own page, served behind NGINX at
+**https://www.vaugouin.com/synthetic-review/** (Basic auth, same realm as `/back`). No `.env` edit,
+no command line:
+
+1. pick an entity class and an entity, a representation, a T2T and a T2I model, a number of images;
+2. **Preview** (no model call): the source text, the complete T2T prompt (system + message), the
+   T2I template, and the estimated cost;
+3. **Describe**: the description, its real cost, and the complete T2I prompt; the description can
+   be corrected before rendering (a corrected text is recorded as a description of its own);
+4. **Render**: N candidates in parallel, shown as they land;
+5. **Review**: one row per entity, candidates side by side; click to enlarge (model, cost, seed,
+   description, T2I prompt) and **Choose**. The choice is served at once by `tmdb-front`
+   (`f_getsyntheticimagepath()`), and no batch ever undoes it.
+
+Every render is a candidate, nothing is overwritten. Guards: cost shown before each launch, at most
+`LAB_MAX_RENDERS` renders per click, a daily ceiling `LAB_DAILY_BUDGET_USD` read from the database,
+`LAB_DRY_RUN=1` to stub every model call.
+
+```bash
+# once, before the first start (idempotent):
+~/docker/tools/runsqlvaugouindb.sh ~/docker/synthetic-images/03_candidates_migration.sql
+# start, or rebuild after a git pull:
+bash synthetic-images-lab.sh            # bash synthetic-images-lab.sh --restart
+```
+
+The container uses host networking (the database is on the host loopback) and listens on the
+Docker bridge only, `172.17.0.1:8195`; NGINX (`reverseproxy`, `location /synthetic-review/`)
+proxies to it and strips the prefix. Locally: `python synthetic_images_lab.py` then
+http://127.0.0.1:8195/.
+
 ## Logo padding — companies / networks (zero model cost)
 
 Companies and networks are **not synthesized** (decision #7 — synthesizing a brand's logo would
@@ -67,12 +100,13 @@ docker run --rm --network="host" --env-file .env -v $HOME/docker/shared_data/syn
 **with** a `LOGO_PATH` (the ~156k logo-less companies are a separate threshold/skip decision).
 `.svg` logos are fetched as the CDN's rasterized PNG rendition at `LOGO_RASTER_SIZE`.
 
-## Data model (`01_create_schema.sql`)
+## Data model (`01_create_schema.sql` + `03_candidates_migration.sql`)
 
 | Table | Role |
 |---|---|
-| `T_WC_T2S_SYNTHETIC_IMAGE` | one row per generated image (artifact + full provenance + lifecycle). |
-| `T_WC_T2S_ENTITY_IMAGE` | entity-occurrence → image mapping; makes the Wikidata dedup clean. |
+| `T_WC_T2S_SYNTHETIC_IMAGE` | one row per generated image, i.e. per **candidate** (`ITEM_CLASS`, `ID_ITEM`, `CANDIDATE_INDEX`), with full provenance, the complete T2I prompt (`T2I_PROMPT`) and the render cost (`GENERATION_COST`). Candidates 2..N carry `\|c<N>` in their `IMAGE_KEY`. |
+| `T_WC_T2S_SYNTHETIC_DESCRIPTION` | one row per description call: the complete T2T prompt (system + message), tokens and **its own cost** (`T2T_COST`), stored once and never spread over the candidates it feeds (`ID_SYNTHETIC_DESCRIPTION`). |
+| `T_WC_T2S_ENTITY_IMAGE` | entity → **served** image (`IS_CHOSEN=1`). A batch claims it for candidate 1; a choice made in the lab sets `IS_MANUAL_CHOICE=1` and is never undone. |
 | `T_WC_T2S_REPRESENTATION` | controlled representation vocabulary per class (flag / map / plate / …). |
 
 ## Configuration

@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Labo images synthétiques</title>
+  <link rel="stylesheet" href="static/lab.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1>Labo images synthétiques</h1>
+    <label>Type d'entité
+      <select id="classSelect"></select>
+    </label>
+    <div id="budget" class="budget"></div>
+  </header>
+
+  <main>
+    <section class="panel" id="workshop">
+      <h2>Atelier</h2>
+      <div class="grid2">
+        <div>
+          <label>Entité
+            <input id="entitySearch" type="search" placeholder="Chercher un nom…" autocomplete="off">
+          </label>
+          <ul id="entityResults" class="results"></ul>
+          <div id="entityPicked" class="picked">Aucune entité choisie.</div>
+        </div>
+        <div class="settings">
+          <label>Représentation <select id="repSelect"></select></label>
+          <label>Modèle texte (T2T) <select id="t2tSelect"></select></label>
+          <label>Modèle image (T2I) <select id="t2iSelect"></select></label>
+          <label>Nombre d'images <input id="nInput" type="number" min="1" value="3"></label>
+          <button id="previewBtn" disabled>1. Prévisualiser</button>
+        </div>
+      </div>
+
+      <div id="previewBox" hidden>
+        <div class="estimate" id="estimate"></div>
+        <details>
+          <summary>Texte source (<span id="sourceKind"></span>)</summary>
+          <pre id="sourceText"></pre>
+        </details>
+        <h3>Prompt T2T envoyé au modèle texte</h3>
+        <p class="hint">Système :</p>
+        <pre id="t2tSystem"></pre>
+        <p class="hint">Message :</p>
+        <pre id="t2tPrompt"></pre>
+        <button id="describeBtn">2. Décrire</button>
+      </div>
+
+      <div id="describeBox" hidden>
+        <h3>Description (modifiable avant le rendu)</h3>
+        <textarea id="descText" rows="4"></textarea>
+        <p class="hint" id="descMeta"></p>
+        <h3>Prompt T2I envoyé au modèle image</h3>
+        <pre id="t2iPrompt"></pre>
+        <button id="renderBtn">3. Produire les images</button>
+      </div>
+
+      <div id="jobBox" hidden>
+        <h3 id="jobTitle"></h3>
+        <div id="jobImages" class="thumbs"></div>
+      </div>
+    </section>
+
+    <section class="panel" id="review">
+      <h2>Revue et choix</h2>
+      <div class="filters">
+        <input id="reviewSearch" type="search" placeholder="Filtrer par nom…">
+        <select id="reviewOnly">
+          <option value="with">Avec candidates</option>
+          <option value="unchosen">Sans choix manuel</option>
+          <option value="all">Toutes les entités</option>
+        </select>
+        <button id="reviewRefresh">Actualiser</button>
+      </div>
+      <div id="reviewRows"></div>
+    </section>
+  </main>
+
+  <dialog id="lightbox">
+    <div class="lb">
+      <img id="lbImg" alt="">
+      <div class="lbInfo">
+        <h3 id="lbTitle"></h3>
+        <dl id="lbMeta"></dl>
+        <details><summary>Prompt T2I</summary><pre id="lbPrompt"></pre></details>
+        <div class="lbActions">
+          <button id="lbChoose">Choisir cette image</button>
+          <button id="lbClose" class="secondary">Fermer</button>
+        </div>
+        <p id="lbMsg" class="hint"></p>
+      </div>
+    </div>
+  </dialog>
+
+  <div id="toast" class="toast" hidden></div>
+  <script src="static/lab.js"></script>
+</body>
+</html>

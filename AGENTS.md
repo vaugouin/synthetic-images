@@ -23,11 +23,13 @@ images are served by `tmdb-front`'s Apache and consumed by `tmdb-front` + `voice
   by representation: `logo-pad` (the company/network default) routes to the deterministic padding
   path; everything else goes through the two-stage synthetic pipeline.
 - `synthetic_images_functions.py` — the two-stage pipeline (description → image), validation, storage, persistence; plus **Stage L** (`f_pad_logo_image`), the zero-cost Pillow path that pads the real TMDb company/network logo onto the 2:3 canvas (decision #7) and reuses the same validation/storage/persistence.
+- `synthetic_images_lab.py` + `lab/`: **the lab** (SYNTHETIC-IMAGES-020): FastAPI service and its page (vanilla JS, French UI) to preview prompts and cost, describe, render N candidates with any model, and choose the served image. Behind NGINX at `/synthetic-review/` (prefix stripped, page uses relative URLs). Run by `synthetic-images-lab.sh` (container `synthetic-images-lab`, host networking, listens on `172.17.0.1:8195` only). It calls the same pipeline functions as the CLI; never re-implement pipeline logic in the page.
 - `eval_bakeoff.py` — model/prompt bake-off harness (eval-plan §6): sweeps the golden set × t2t/t2i models, writes an isolated `EVAL_DIR/<run_id>/` tree (descriptions.csv, scores.csv, contact-sheet HTML, run.json). **No DB / no shared-store writes** — reuses the pipeline stage functions only.
 - `golden_set.py` — the fixed ~35-item evaluation set (eval-plan §1); keep it stable once chosen.
 - `citizenphil.py` — shared DB layer (verbatim copy; do not edit here).
 - `01_create_schema.sql` — `T_WC_T2S_SYNTHETIC_IMAGE` + `T_WC_T2S_ENTITY_IMAGE` + `T_WC_T2S_REPRESENTATION`.
 - `02_representation_seed.sql` — the controlled representation vocabulary per class.
+- `03_candidates_migration.sql`: candidates, `T_WC_T2S_SYNTHETIC_DESCRIPTION`, `IS_MANUAL_CHOICE` (idempotent; **run before deploying code from 2026-10-08 on**, the pipeline writes these columns).
 
 ## Keystone rules (do not break)
 
@@ -37,12 +39,24 @@ images are served by `tmdb-front`'s Apache and consumed by `tmdb-front` + `voice
 2. **Identity = `ID_WIKIDATA`** (fall back to `(ITEM_CLASS, ID_ITEM)`); one image per Q-id serves
    every role it plays — dedup is automatic (review §4.2 / decision #14).
 3. **Idempotency** keys on `(IMAGE_KEY, STYLE_VERSION)` — a style bump regenerates; otherwise skip.
+   An entity has **candidates** 1..N (`CANDIDATES`, default 3): one description, N renders.
+   Candidate 1 keeps the historical key, candidates 2..N append `|c<N>`. The lab appends new
+   indexes and never overwrites a candidate.
 4. **Provenance + seed are mandatory** on every image row (reproduce / A-B a style change).
-5. **Batch-only v1.** No real-time generation (that's Project B).
+5. **No real-time generation for end users** (that's Project B). The lab is an operator tool behind authentication, not a user-facing path.
 6. **Generation language = English** (canonical). Images are language-neutral.
 7. **Companies/networks are never synthesized** — pad the real TMDb logo (decision #7;
    synthesizing a brand's logo misrepresents a trademark). `--class company` / `--class network`
    runs are zero-model-cost by construction: `logo-pad` is their only representation.
+8. **A manual choice is final.** `f_set_entity_choice()` is the only writer of
+   `T_WC_T2S_ENTITY_IMAGE`: automatic calls claim the slot only when the entity has none, or for
+   candidate 1 when the current choice is not manual. Never write that table with
+   `f_sqlbulkupsert`: `ID_WIKIDATA` is NULL for genres and the like, a NULL defeats the UNIQUE key,
+   and an upsert inserts a duplicate.
+9. **Costs are stored where they are incurred.** A render's cost is `GENERATION_COST` on its image
+   row; a description's cost is `T2T_COST` on its description row, once. Prices live in
+   `T2I_COST` / `GEMINI_COST` / `OPENAI_COST` / `T2T_PRICE` (survey of 2026-10-08); refresh them
+   rather than guessing.
 
 ## Failure handling (daily-schedule end state)
 

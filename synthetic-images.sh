@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Check if the synthetic-images Docker container is running
-if [ $(docker ps -q -f name=synthetic-images) ]; then
+if [ "$(docker ps -q -f name=^synthetic-images$)" ]; then
     echo "synthetic-images Docker container is already running."
 else
     # Start the synthetic-images container if it is not running.

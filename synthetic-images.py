@@ -9,6 +9,8 @@ Two modes:
   * BATCH over a class at a usage threshold (review §11 phasing):
         python synthetic-images.py --class technical --dry-run
         python synthetic-images.py --class technical --limit 10
+    Each entity gets CANDIDATES (default 3) candidates: one description, N renders; candidate 1
+    is served at once, the lab (synthetic_images_lab.py) chooses among them.
   * LOGO PADDING ONLY (decision #7; zero model cost -- companies/networks default to the
     'logo-pad' representation, which routes to the deterministic Pillow path):
         python synthetic-images.py --class company
@@ -153,6 +155,8 @@ def f_run_single(args):
             lngiditem=args.item_id, strname=args.name, stroverview=args.overview,
             strrepresentation=strrep, lngseed=args.seed,
             intdryrun=1 if args.dry_run else 0, intforce=1 if args.force else 0,
+            intcandidates=args.candidates, strt2tmodelused=args.t2t_model,
+            strt2imodelused=args.t2i_model,
         )
     _print_result(args.name or args.item_wikidata or args.item_id, res)
     return res
@@ -185,6 +189,8 @@ def f_run_batch(args):
                 lngiditem=arr.get("id_item"), strname=str(arr.get("name") or ""),
                 stroverview=str(arr.get("overview") or ""), strrepresentation=strrep,
                 intdryrun=1 if args.dry_run else 0, intforce=1 if args.force else 0,
+                intcandidates=args.candidates, strt2tmodelused=args.t2t_model,
+                strt2imodelused=args.t2i_model,
             )
         _print_result(arr.get("name"), res)
         dblspent += res.get("cost") or 0.0
@@ -221,6 +227,10 @@ def f_parse_args(argv):
     p.add_argument("--limit", type=int, default=0, help="max items this run (batch)")
     p.add_argument("--dry-run", action="store_true", help="no API calls, no DB writes")
     p.add_argument("--force", action="store_true", help="regenerate even if the image exists")
+    p.add_argument("--candidates", type=int, default=si.lngcandidatesdefault,
+                   help="candidates per entity: one description, N renders (CANDIDATES, default 3)")
+    p.add_argument("--t2t-model", dest="t2t_model", default=None, help="override T2T_MODEL for this run")
+    p.add_argument("--t2i-model", dest="t2i_model", default=None, help="override T2I_MODEL for this run")
     return p.parse_args(argv)
 
 
