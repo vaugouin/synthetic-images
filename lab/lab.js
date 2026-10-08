@@ -236,7 +236,9 @@ function pollJob(jobId) {
         state.pollTimer = setTimeout(tick, 1500);
       } else {
         const ok = job.results.filter((r) => r.status === "generated").length;
+        const labels = [...new Set(job.results.filter((r) => r.status !== "generated").map((r) => errorLabel(r.failure_reason)))];
         $("jobTitle").textContent = "Terminé : " + ok + "/" + job.n + " image(s) avec " + job.model + " en " + job.elapsed + " s" +
+          (labels.length ? " · échecs : " + labels.join(", ").toLowerCase() + " (cliquer pour le détail)" : "") +
           (job.error ? " · " + job.error : "");
         $("renderBtn").disabled = false;
         refreshBudget();
@@ -265,10 +267,23 @@ function thumbHtml(c, chosenId, entityName) {
   const ok = c.STATUS === "generated" && c.url;
   const media = ok
     ? `<img loading="lazy" src="${esc(c.url)}" alt="">`
-    : `<div class="ph">échec<br>${esc(c.FAILURE_REASON || "")}</div>`;
+    : `<div class="ph fail" title="Cliquer pour le détail"><span class="icon">⚠</span>${esc(errorLabel(c.FAILURE_REASON))}</div>`;
   return `<div class="thumb${isChosen ? " chosen" : ""}" data-image="${esc(c.ID_SYNTHETIC_IMAGE || "")}">` +
     (isChosen ? '<span class="star">servie</span>' : "") + media +
     `<div class="tag" title="${esc(c.T2I_MODEL)}">#${esc(c.CANDIDATE_INDEX)} · ${esc(shortModel(c.T2I_MODEL))}</div></div>`;
+}
+
+// A provider error is long and technical: the thumbnail shows a short label, the full message
+// is one click away in the lightbox.
+function errorLabel(reason) {
+  const r = String(reason || "").toLowerCase();
+  if (r.includes("moderation") || r.includes("safety")) return "Refusée par la modération";
+  if (r.includes("402") || r.includes("credit") || r.includes("resource_exhausted")) return "Crédit épuisé";
+  if (r.includes("429") || r.includes("rate limit") || r.includes("throttl")) return "Limite de débit";
+  if (r.includes("timed out") || r.includes("timeout") || r.includes("after the timeout")) return "Délai dépassé";
+  if (r.startsWith("retired")) return "Modèle retiré";
+  if (r.includes("aspect ratio")) return "Mauvais format";
+  return "Échec du rendu";
 }
 
 function shortModel(model) {
@@ -296,9 +311,18 @@ async function loadReview() {
 
 function openLightbox(imageId) {
   const c = candidateCache.get(String(imageId));
-  if (!c || !c.url) return;
+  if (!c) return;
   state.lightboxImage = c;
-  $("lbImg").src = c.url;
+  const ok = c.STATUS === "generated" && c.url;
+  $("lbImg").hidden = !ok;
+  $("lbError").hidden = !!ok;
+  $("lbChoose").hidden = !ok;
+  if (ok) {
+    $("lbImg").src = c.url;
+  } else {
+    $("lbImg").removeAttribute("src");
+    $("lbError").innerHTML = `<h4>⚠ ${esc(errorLabel(c.FAILURE_REASON))}</h4><p class="hint">Message du fournisseur :</p><pre>${esc(c.FAILURE_REASON || "aucun message")}</pre>`;
+  }
   $("lbTitle").textContent = (c.entityName || "") + " · candidate " + c.CANDIDATE_INDEX;
   const rows = [
     ["Modèle image", c.T2I_MODEL], ["Modèle texte", c.T2T_LLM], ["Coût", money(c.GENERATION_COST)],

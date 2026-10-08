@@ -41,6 +41,11 @@ summary { cursor: pointer; color: var(--accent); }
 .thumbs { display: flex; flex-wrap: wrap; gap: 10px; }
 .thumb { width: 120px; position: relative; cursor: pointer; }
 .thumb img, .thumb .ph { width: 120px; height: 180px; object-fit: cover; border-radius: 4px; border: 2px solid transparent; display: block; background: #ece8de; }
+.thumb .ph.fail { flex-direction: column; gap: 6px; border: 1px dashed #d9b3b3; background: #faf3f3; color: var(--bad); }
+.thumb .ph.fail .icon { font-size: 22px; line-height: 1; }
+.lbError { width: 360px; min-height: 240px; padding: 16px; border-radius: 6px; background: #faf3f3; border: 1px dashed #d9b3b3; color: var(--bad); }
+.lbError h4 { margin: 0 0 8px; }
+.lbError pre { color: var(--ink); max-height: 50vh; }
 .thumb .ph { display: flex; align-items: center; justify-content: center; text-align: center; font-size: 12px; color: var(--muted); padding: 6px; }
 .thumb.chosen img { border-color: var(--chosen); }
 .thumb .tag { font-size: 11px; color: var(--muted); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

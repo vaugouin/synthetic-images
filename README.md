@@ -114,7 +114,7 @@ docker run --rm --network="host" --env-file .env -v $HOME/docker/shared_data/syn
 All via `.env` (see `.env.example`): DB connection, the text-to-image provider
 (`REPLICATE_API_TOKEN`, `T2I_MODEL` — bake-off front-runner **FLUX.1 schnell**), a text-to-text
 provider key, the Tavily fallback key, storage paths, the provenance versions
-(`STYLE_VERSION` / `*_PROMPT_VERSION`), and the run guards (`RUN_BUDGET_USD`, `USAGE_THRESHOLD`).
+(`STYLE_VERSION` / `T2I_PROMPT_VERSION`; `T2T_PROMPT_VERSION` is owned by the code), and the run guards (`RUN_BUDGET_USD`, `USAGE_THRESHOLD`).
 
 ## Evaluation — model/prompt bake-off
 

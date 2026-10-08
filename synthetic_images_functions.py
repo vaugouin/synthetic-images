@@ -33,7 +33,12 @@ import citizenphil as cp
 # ---------------------------------------------------------------------------
 strsqlns = os.environ.get("DB_NAMESPACE", "T_WC_")
 strstyleversion = os.environ.get("STYLE_VERSION", "v1")
-strt2tpromptversion = os.environ.get("T2T_PROMPT_VERSION", "v2")
+# Bump with any change to the description prompt or its subject rules (provenance of every row).
+# v3 (2026-10-08): genres are depicted by objects and settings, never by a character -- an
+# "Animation" description asked for a cartoon character and GPT Image blocked all three renders
+# at output moderation (likely resemblance to a protected character).
+# Owned by the code, not by .env: an old T2T_PROMPT_VERSION=v1 left in a .env would mislabel every row.
+strt2tpromptversion = "v3"
 strt2tsourcemaxchars = int(os.environ.get("T2T_SOURCE_MAXCHARS", "2000"))
 strt2ipromptversion = os.environ.get("T2I_PROMPT_VERSION", "v1")
 strt2tmodel = os.environ.get("T2T_MODEL", "claude-haiku-5-5")
@@ -414,8 +419,8 @@ T2T_SUBJECT_RULES = {
     # --- Technicals (film-domain apparatus / material) ---
     ("technical", "plate"): "the physical apparatus, equipment or film material that embodies the technique -- e.g. a reel or strip of film with visible imagery on the frames, a camera, a projector, or a lens",
     # --- Genres ---
-    ("genre", "plate"): "the iconic objects, props or setting that signal the film genre",
-    ("genre", "artistic"): "an evocative montage of motifs from the film genre",
+    ("genre", "plate"): "the iconic objects, tools, props or setting that signal the film genre -- objects, tools and settings only: no person, creature or cartoon figure, and nothing that resembles a known character, mascot, franchise or brand",
+    ("genre", "artistic"): "an evocative montage of motifs from the film genre -- objects, tools and settings only: no person, creature or cartoon figure, and nothing that resembles a known character, mascot, franchise or brand",
     # --- Countries ---
     ("country", "flag"): "the official national flag, shown as a full rectangular flag displayed flat and front-facing with its colours and design clearly visible and correctly ordered; if a flagpole is shown it is a vertical pole along the LEFT (hoist) edge of the flag -- never a horizontal pole above the flag, and the flag hangs to the right of that pole",
     ("country", "map"): "a clean map locating the country, in neutral cartographic styling",
@@ -451,7 +456,7 @@ T2T_CLASS_DEFAULT = {
     "nomination": "a generic award trophy or medal (avoid trademarked real trophies)",
     "movement": "an iconic object or scene that exemplifies the movement",
     "technical": "the physical apparatus or material that embodies the technique",
-    "genre": "the iconic objects or setting that signal the genre",
+    "genre": "the iconic objects or setting that signal the genre -- objects, tools and settings only: no person, creature or cartoon figure, and nothing that resembles a known character, mascot, franchise or brand",
     "country": "the country as a recognizable place",
     "language": "the characteristic written script of the language",
     "collection": "the shared visual motifs of the collection's members",
