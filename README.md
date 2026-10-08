@@ -114,9 +114,11 @@ docker run --rm --network="host" --env-file .env -v $HOME/docker/shared_data/syn
 
 `EVAL_DIR` defaults to `/shared/eval` (→ `shared_data/synthetic-images/eval/` on the host).
 Guards: `--dry-run`, `--limit N`, `--budget` (USD ceiling), `--t2t-models` / `--t2i-models`
-(comma-separated). Today the wired candidates are Anthropic Haiku + Sonnet (t2t) and FLUX.1
-schnell (t2i); add OpenAI/Gemini (t2t) and Nano Banana / GPT Image (t2i) as those providers are
-wired. The CSVs carry blank human-score columns to fill while reviewing the contact sheets.
+(comma-separated). The default sweep is Claude Haiku 5.5 + Sonnet 5.5 (t2t) and seven t2i
+models: FLUX.1 schnell, Z-Image Turbo, P-Image, FLUX.2 dev and pro, Krea 2 medium (Replicate) and
+Nano Banana 2.1 (Gemini direct); FLUX.2 flex, GPT Image 2 and Nano Banana Pro are opt-in. Every
+render is normalised to the 1024x1536 master, since most models cannot output that size exactly.
+Prices and retirements were surveyed on 2026-10-08 (`T2I_COST`); OpenAI/Gemini t2t are not wired. The CSVs carry blank human-score columns to fill while reviewing the contact sheets.
 
 ## Failure handling
 

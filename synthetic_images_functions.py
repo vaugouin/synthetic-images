@@ -35,7 +35,11 @@ strstyleversion = os.environ.get("STYLE_VERSION", "v1")
 strt2tpromptversion = os.environ.get("T2T_PROMPT_VERSION", "v2")
 strt2tsourcemaxchars = int(os.environ.get("T2T_SOURCE_MAXCHARS", "2000"))
 strt2ipromptversion = os.environ.get("T2I_PROMPT_VERSION", "v1")
-strt2tmodel = os.environ.get("T2T_MODEL", "claude-haiku-4-5-20251001")
+strt2tmodel = os.environ.get("T2T_MODEL", "claude-haiku-5-5")
+# Effort for the description call on models that support it (Claude 4.6+ / 5.x). A short object
+# description needs no deep reasoning; "low" keeps adaptive thinking cheap (Haiku 5.5 defaults
+# to "medium").
+strt2teffort = os.environ.get("T2T_EFFORT", "low")
 strt2imodel = os.environ.get("T2I_MODEL", "black-forest-labs/flux-schnell")
 straspectratio = os.environ.get("ASPECT_RATIO", "2:3")
 lngmasterwidth = int(os.environ.get("MASTER_WIDTH", "1024"))
@@ -45,17 +49,50 @@ lngmasterheight = int(os.environ.get("MASTER_HEIGHT", "1536"))
 # folder -- the container cannot see the rest of shared_data. SYNTHETIC_IMAGE_SUBDIR is NOT a
 # physical subdir under it; it is the URL prefix Apache (serving from the real shared_data root,
 # one level up) prepends. See f_store_image for why the two must stay decoupled.
-# Approximate per-image unit cost for budget tracking (review §8) -- VERIFY current pricing.
+# Per-image unit cost for budget tracking (review §8), USD for one ~1024x1536 image.
+# Read from each provider's pricing page on 2026-10-08 (SYNTHETIC-IMAGES-008); the full survey and
+# its sources: Nestor/projets/t2s-backlog/topics/an-image-for-everything/etat-des-lieux-modeles-2026-10-08.md.
+# Per-megapixel prices are x 1.57 MP. Prices drift: re-read them before an expensive run.
 T2I_COST = {
-    "black-forest-labs/flux-schnell": 0.006,
-    "prunaai/z-image-turbo": 0.003,         # Apache-2.0 open weights -- VERIFY current Replicate price
-    "black-forest-labs/flux-2-dev": 0.019,  # ~0.012/MP * 1.57 MP (1024x1536) -- VERIFY
-    "black-forest-labs/flux-2-pro": 0.038,  # ~0.015 + 0.015/MP -- VERIFY
-    "black-forest-labs/flux-2-flex": 0.094, # ~0.06/MP (best typography, slower) -- VERIFY
-    "gpt-image-1": 0.04,                    # OpenAI GPT Image, medium quality 1024x1536 -- VERIFY
+    # Replicate
+    "black-forest-labs/flux-schnell": 0.003,  # $3 / 1000 images; max 1 MP, so ~832x1248 then upscaled
+    "prunaai/z-image-turbo": 0.012,           # per-MP tiers, 0.008-0.016 depending on the tier
+    "prunaai/p-image": 0.005,                 # $5 / 1000 images; max 1440 px a side
+    "krea/krea-2-medium": 0.03,               # text-to-image only (style references cost more)
+    "black-forest-labs/flux-2-dev": 0.022,    # $0.014/MP regular (0.019 with go_fast)
+    "black-forest-labs/flux-2-pro": 0.039,    # $0.015/run + $0.015/MP
+    "black-forest-labs/flux-2-flex": 0.094,   # $0.06/MP (best typography, slower)
     "google/nano-banana": 0.039,
-    "gemini-2.5-flash-image": 0.039,        # Nano Banana
-    "gemini-3-pro-image-preview": 0.145,    # Nano Banana Pro -- MEASURED: EUR 4.93 / 34 imgs (2026-06-10)
+    # OpenAI direct, "medium" quality 1024x1536 (see OPENAI_COST for the other qualities)
+    "gpt-image-2": 0.041,
+    "gpt-image-2.5-flare": 0.041,             # not published per image; same token rates as gpt-image-2 (estimate)
+    "gpt-image-2.5-sunburst": 0.041,          # idem
+    "gpt-image-1": 0.063,                     # deprecated, shuts down 2026-10-23
+    # Gemini direct, at GEMINI_IMAGE_SIZE (see GEMINI_COST)
+    "gemini-nano-banana-2.1": 0.0504,
+    "gemini-3.1-flash-lite-image": 0.0336,
+    "gemini-3.1-flash-image": 0.101,
+    "gemini-3-pro-image": 0.134,
+    "gemini-2.5-flash-image": 0.039,          # legacy; Google's shutdown date is contradictory
+}
+# Conservative cost charged for a model missing from the tables (budget ceiling stays meaningful).
+T2I_COST_UNKNOWN = 0.10
+# Size-dependent prices: Gemini by image_size, OpenAI by quality. f_t2i_cost() reads these first.
+GEMINI_COST = {
+    "gemini-nano-banana-2.1": {"1K": 0.0336, "2K": 0.0504, "4K": 0.1134},
+    "gemini-3.1-flash-lite-image": {"1K": 0.0336},
+    "gemini-3.1-flash-image": {"1K": 0.067, "2K": 0.101, "4K": 0.151},
+    "gemini-3-pro-image": {"1K": 0.134, "2K": 0.134, "4K": 0.24},
+}
+# Gemini image models that accept only the 1K size (passing "2K" would be rejected).
+GEMINI_1K_ONLY = ("gemini-3.1-flash-lite-image", "gemini-2.5-flash-image")
+OPENAI_COST = {
+    "gpt-image-2": {"low": 0.005, "medium": 0.041, "high": 0.165},
+    "gpt-image-1": {"low": 0.016, "medium": 0.063, "high": 0.25},
+}
+# Model ids that no longer answer: fail fast with the replacement instead of a provider error.
+T2I_RETIRED = {
+    "gemini-3-pro-image-preview": "gemini-3-pro-image",  # shut down 2026-06-25
 }
 strshareddatadir = os.environ.get("SHARED_DATA_DIR", "/shared")
 strsubdir = os.environ.get("SYNTHETIC_IMAGE_SUBDIR", "synthetic-images")
@@ -461,19 +498,38 @@ def _call_t2t_llm(strprompt, strmodel):
     )
 
 
+def _anthropic_supports_effort(strmodel):
+    """output_config.effort exists on Claude 4.6+ and the 5.x family; Haiku 4.5 and older reject it."""
+    strmodel = (strmodel or "").lower()
+    return strmodel.startswith(("claude-haiku-5", "claude-sonnet-5", "claude-opus-5",
+                                "claude-fable-5", "claude-sonnet-4-6", "claude-opus-4-6",
+                                "claude-opus-4-7", "claude-opus-4-8"))
+
+
 def _call_anthropic(strprompt, strmodel):
-    """Anthropic Messages API call. Reads ANTHROPIC_API_KEY from the environment (.env)."""
+    """Anthropic Messages API call. Reads ANTHROPIC_API_KEY from the environment (.env).
+    Current models think adaptively by default; max_tokens leaves room for that thinking on top
+    of the ~200-token description, and T2T_EFFORT keeps it small."""
     from anthropic import Anthropic
     client = Anthropic()
+    dctextra = {}
+    if _anthropic_supports_effort(strmodel) and strt2teffort:
+        dctextra["output_config"] = {"effort": strt2teffort}
     msg = client.messages.create(
         model=strmodel,
-        max_tokens=1024,
+        max_tokens=4096,
         system=("You write concise, literal visual object descriptions for an encyclopedic "
                 "illustration pipeline. Favor simplicity and instant recognizability over "
                 "completeness. Respond with the description only -- no preamble, no style or "
                 "color words, no aspect ratio."),
         messages=[{"role": "user", "content": strprompt}],
+        **dctextra
     )
+    if msg.stop_reason == "refusal":
+        print("  [t2t] {0} refused the description request".format(strmodel))
+        return ""
+    if msg.stop_reason == "max_tokens":
+        print("  [t2t] {0} hit max_tokens; the description may be truncated".format(strmodel))
     arrparts = [block.text for block in msg.content if getattr(block, "type", "") == "text"]
     return "\n".join(arrparts).strip()
 
@@ -492,7 +548,11 @@ def f_text_to_image(strobjectdescription, lngseed=None, intdryrun=0, strmodel=No
     strprompt = STYLE_TEMPLATE.format(object_description=strobjectdescription)
     if intdryrun:
         return _placeholder_image(), (lngseed or 0), 0.0
-    if strt2i.startswith("gemini") or "nano-banana" in strt2i:
+    if strt2i in T2I_RETIRED:
+        print("  [t2i] model '{0}' is retired; use '{1}'".format(strt2i, T2I_RETIRED[strt2i]))
+        return None, (lngseed or 0), 0.0
+    # Direct Gemini ids have no owner prefix; "google/nano-banana" is the Replicate-hosted copy.
+    if strt2i.startswith("gemini") and "/" not in strt2i:
         return _t2i_gemini(strprompt, strt2i, lngseed)
     if strt2i.startswith("gpt-image") or strt2i.startswith("dall-e"):
         return _t2i_openai(strprompt, strt2i, lngseed)
@@ -520,17 +580,30 @@ def _replicate_input(strmodel, strprompt, lngseed):
             "num_inference_steps": 8,
         })
         return dctin
-    # FLUX.1 schnell (current default).
+    if strmodel == "prunaai/p-image":
+        # P-Image: no output_format input, and width/height stop at 1440, so 1024x1536 cannot be
+        # asked for directly; the 2:3 preset is normalised to the master size afterwards.
+        del dctin["output_format"]
+        dctin["aspect_ratio"] = straspectratio
+        return dctin
+    if strmodel.startswith("krea/krea-2"):
+        # Krea 2: no output_format input; "creativity" stays at its default. Style references
+        # (style_reference_images) are the lever to test for the style lock, at extra cost.
+        del dctin["output_format"]
+        dctin["aspect_ratio"] = straspectratio
+        return dctin
+    # FLUX.1 schnell (current default). Its `megapixels` input stops at 1, so a 2:3 render is
+    # ~1 MP and gets normalised to the master size afterwards.
     dctin["aspect_ratio"] = straspectratio
     return dctin
 
 
 def _t2i_replicate(strprompt, strmodel, lngseed):
-    """Replicate-hosted model (FLUX.1/2 schnell, Z-Image; review §8). Returns (webp_bytes, seed, cost)."""
+    """Replicate-hosted model (FLUX.1/2, Z-Image, P-Image, Krea 2; review §8). Returns (webp_bytes, seed, cost)."""
     try:
         import replicate
         arrout = replicate.run(strmodel, input=_replicate_input(strmodel, strprompt, lngseed))
-        return _read_replicate_output(arrout), (lngseed or 0), T2I_COST.get(strmodel, 0.006)
+        return _to_webp(_read_replicate_output(arrout)), (lngseed or 0), f_t2i_cost(strmodel)
     except Exception as err:
         print("  [t2i] replicate generation failed ({0}): {1}".format(strmodel, err))
         return None, (lngseed or 0), 0.0
@@ -538,15 +611,18 @@ def _t2i_replicate(strprompt, strmodel, lngseed):
 
 def _t2i_gemini(strprompt, strmodel, lngseed):
     """
-    Google Gemini image generation -- Nano Banana (gemini-2.5-flash-image) / Nano Banana Pro
-    (gemini-3-pro-image-preview). Uses GEMINI_API_KEY. The image API has NO seed control, so the
-    seed is recorded but not enforced (determinism is FLUX-only). Output (PNG) is normalised to a
-    2:3 WebP master for parity with the other providers. Returns (webp_bytes, seed, cost).
+    Google Gemini image generation -- Nano Banana 2.1 (gemini-nano-banana-2.1), Nano Banana 2 and
+    2 Lite (gemini-3.1-flash-image / -flash-lite-image), Nano Banana Pro (gemini-3-pro-image), and
+    the legacy Nano Banana (gemini-2.5-flash-image). Uses GEMINI_API_KEY. Seed control is not
+    documented for images, so the seed is recorded but not enforced. Gemini has no 1024x1536 size
+    (2:3 is 848x1264 at 1K, 1696x2528 at 2K): the output is normalised to the master size.
+    Returns (webp_bytes, seed, cost).
     """
     try:
         from google import genai
         from google.genai import types
         client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY", ""))
+        strsize = _gemini_image_size(strmodel)
         rsp = client.models.generate_content(
             model=strmodel,
             contents=strprompt,
@@ -554,13 +630,13 @@ def _t2i_gemini(strprompt, strmodel, lngseed):
                 response_modalities=["IMAGE"],
                 image_config=types.ImageConfig(
                     aspect_ratio=straspectratio,
-                    image_size=os.environ.get("GEMINI_IMAGE_SIZE", "2K"),
+                    image_size=strsize,
                 ),
             ),
         )
         for part in rsp.parts:
             if getattr(part, "inline_data", None) and part.inline_data.data:
-                return _to_webp(part.inline_data.data), (lngseed or 0), T2I_COST.get(strmodel, 0.04)
+                return _to_webp(part.inline_data.data), (lngseed or 0), f_t2i_cost(strmodel)
         print("  [t2i] gemini returned no image for {0} (safety block / refusal?)".format(strmodel))
         return None, (lngseed or 0), 0.0
     except Exception as err:
@@ -570,10 +646,11 @@ def _t2i_gemini(strprompt, strmodel, lngseed):
 
 def _t2i_openai(strprompt, strmodel, lngseed):
     """
-    OpenAI image generation -- GPT Image (gpt-image-1). Uses OPENAI_API_KEY. gpt-image-1 returns
-    base64 PNG and accepts a fixed set of sizes; "1024x1536" is the 2:3 portrait that matches our
-    master. There is NO seed control, so the seed is recorded but not enforced (determinism is
-    FLUX-only). Output is normalised to a 2:3 WebP master. Returns (webp_bytes, seed, cost).
+    OpenAI image generation -- GPT Image (gpt-image-2, gpt-image-2.5-flare / -sunburst; the
+    deprecated gpt-image-1 shuts down 2026-10-23). Uses OPENAI_API_KEY. Returns base64 PNG;
+    "1024x1536" is the 2:3 portrait that matches our master. There is NO seed control, so the seed
+    is recorded but not enforced. Output is normalised to a 2:3 WebP master.
+    Returns (webp_bytes, seed, cost).
     """
     try:
         import base64
@@ -588,7 +665,7 @@ def _t2i_openai(strprompt, strmodel, lngseed):
         )
         strb64 = rsp.data[0].b64_json
         if strb64:
-            return _to_webp(base64.b64decode(strb64)), (lngseed or 0), T2I_COST.get(strmodel, 0.04)
+            return _to_webp(base64.b64decode(strb64)), (lngseed or 0), f_t2i_cost(strmodel)
         print("  [t2i] openai returned no image for {0} (safety block / refusal?)".format(strmodel))
         return None, (lngseed or 0), 0.0
     except Exception as err:
@@ -596,10 +673,40 @@ def _t2i_openai(strprompt, strmodel, lngseed):
         return None, (lngseed or 0), 0.0
 
 
+def _gemini_image_size(strmodel):
+    """GEMINI_IMAGE_SIZE (default 2K), forced to 1K for the models that only have 1K."""
+    if strmodel in GEMINI_1K_ONLY:
+        return "1K"
+    return os.environ.get("GEMINI_IMAGE_SIZE", "2K")
+
+
+def f_t2i_cost(strmodel):
+    """USD cost of one render with the current size/quality settings."""
+    if strmodel in GEMINI_COST:
+        dctsizes = GEMINI_COST[strmodel]
+        return dctsizes.get(_gemini_image_size(strmodel), T2I_COST.get(strmodel, 0.0))
+    if strmodel in OPENAI_COST:
+        strquality = os.environ.get("OPENAI_IMAGE_QUALITY", "medium")
+        return OPENAI_COST[strmodel].get(strquality, T2I_COST.get(strmodel, 0.0))
+    if strmodel not in T2I_COST:
+        # Unknown model: count it high rather than free, so the RUN_BUDGET_USD ceiling still bites.
+        print("  [t2i] no unit cost recorded for '{0}': budget tracking counts {1}".format(
+            strmodel, T2I_COST_UNKNOWN))
+    return T2I_COST.get(strmodel, T2I_COST_UNKNOWN)
+
+
 def _to_webp(bytesimage):
-    """Normalise provider output (PNG/JPEG) to a WebP master."""
+    """
+    Normalise provider output (PNG/JPEG/WebP) to the WebP master. Most providers cannot render
+    exactly MASTER_WIDTH x MASTER_HEIGHT (FLUX schnell stops at 1 MP, P-Image at 1440 px a side,
+    Gemini has 848x1264 / 1696x2528), so a render already within the 2:3 tolerance is resized to
+    the master size; anything else is left untouched for f_validate_image to reject.
+    """
     from PIL import Image
     img = Image.open(io.BytesIO(bytesimage)).convert("RGB")
+    w, h = img.size
+    if h and (w, h) != (lngmasterwidth, lngmasterheight) and abs(w / h - 2 / 3) <= 0.02:
+        img = img.resize((lngmasterwidth, lngmasterheight), Image.LANCZOS)
     buf = io.BytesIO()
     img.save(buf, format="WEBP", quality=90)
     return buf.getvalue()

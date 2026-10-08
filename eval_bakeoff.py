@@ -20,7 +20,7 @@ comparison is apples-to-apples (eval-plan §0 principle 3).
 
 Examples:
   # Cheap Stage-1 pass -- descriptions only, no images, no API image cost:
-  python eval_bakeoff.py --skip-images --t2t-models claude-haiku-4-5-20251001,claude-sonnet-4-6
+  python eval_bakeoff.py --skip-images --t2t-models claude-haiku-5-5,claude-sonnet-5-5
   # Full end-to-end sweep on a 6-item subset:
   python eval_bakeoff.py --limit 6
   # Offline plumbing test (stubs, no keys):
@@ -47,20 +47,26 @@ strevaldir = os.environ.get("EVAL_DIR", "/shared/eval")
 strtimezone = os.environ.get("USER_TIMEZONE", "Europe/Paris")
 dblbudgetdefault = float(os.environ.get("RUN_BUDGET_USD", "20"))
 
-# Default candidates. t2t: both Anthropic models are wired today (claude-* dispatch); add the
-# OpenAI/Gemini cross-check once those branches land. t2i: Replicate (FLUX.1/2, Z-Image) + Gemini
-# (Nano Banana / Pro) are wired; narrow with --t2i-models to control cost on a real run.
-T2T_MODELS_DEFAULT = ["claude-haiku-4-5-20251001", "claude-sonnet-4-6"]
+# Default candidates (model survey of 2026-10-08, SYNTHETIC-IMAGES-008). t2t: Anthropic models
+# (claude-* dispatch); add the OpenAI/Gemini cross-check once those branches land. t2i: Replicate
+# (FLUX.1/2, Z-Image, P-Image, Krea 2) + Gemini direct (Nano Banana 2.1); narrow with --t2i-models
+# to control cost on a real run. Every (t2t x t2i) pair renders the ~35-item golden set: about
+# $5.60 of images per t2t model, so ~$11 for the default sweep (prices of 2026-10-08).
+T2T_MODELS_DEFAULT = ["claude-haiku-5-5", "claude-sonnet-5-5"]
 T2I_MODELS_DEFAULT = [
     "black-forest-labs/flux-schnell",
     "prunaai/z-image-turbo",
+    "prunaai/p-image",
     "black-forest-labs/flux-2-dev",
     "black-forest-labs/flux-2-pro",
+    "krea/krea-2-medium",
+    "gemini-nano-banana-2.1",
 ]
-# Opt-in only (NOT in the default sweep): flux-2-flex is the priciest t2i candidate (~0.094/img,
-# best typography/detail). Add it explicitly when needed, e.g.
-#   --t2i-models black-forest-labs/flux-2-flex
-T2I_MODELS_OPTIN = ["black-forest-labs/flux-2-flex"]
+# Opt-in only (NOT in the default sweep): the priciest candidates. Add them explicitly, e.g.
+#   --t2i-models black-forest-labs/flux-2-flex,gpt-image-2
+# gpt-image-2 replaces gpt-image-1 (shut down 2026-10-23); gemini-3-pro-image replaces the
+# retired gemini-3-pro-image-preview.
+T2I_MODELS_OPTIN = ["black-forest-labs/flux-2-flex", "gpt-image-2", "gemini-3-pro-image"]
 
 
 def f_now():
