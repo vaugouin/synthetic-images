@@ -1,0 +1,8 @@
+-- 03_candidates_migration.sql
+-- run on vaugouindb (container damp-vaugouin-com-mariadb-1) at 2026-10-08 10:47:44
+--
++--------+----------------+-------------+
+| IMAGES | WITHOUT_ENTITY | CANDIDATE_1 |
++--------+----------------+-------------+
+|  21626 |              0 |       21626 |
++--------+----------------+-------------+

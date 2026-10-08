@@ -58,6 +58,12 @@ images are served by `tmdb-front`'s Apache and consumed by `tmdb-front` + `voice
    `T2I_COST` / `GEMINI_COST` / `OPENAI_COST` / `T2T_PRICE` (survey of 2026-10-08); refresh them
    rather than guessing.
 
+## Provider pitfalls (learned 2026-10-08)
+
+- **Replicate is called over plain HTTP** (`_replicate_predict()`: create, poll, download), not through the `replicate` client. The client 1.0.x rejects the prediction returned for official models (`version: none is not an allowed value`), and `replicate.run()` then waited 60 s on images Replicate had finished and billed in 4 s. Do not reintroduce the client.
+- **A Gemini `402 RESOURCE_EXHAUSTED` means the prepaid credit of the AI Studio project is spent** (https://ai.studio/projects), not a bad model id. The model list of the key (`GET /v1beta/models`) settles the id question for free.
+- A failed render now carries the provider's message in `FAILURE_REASON` and on the lab thumbnail; read it before guessing.
+
 ## Failure handling (daily-schedule end state)
 
 Failures are **categorized, not blindly retried** (review §6.1). A rule-based classifier tags each

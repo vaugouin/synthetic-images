@@ -21,6 +21,7 @@ import os
 import io
 import time
 import hashlib
+import threading
 from datetime import datetime
 
 import pytz
@@ -92,6 +93,16 @@ OPENAI_COST = {
     "gpt-image-2": {"low": 0.005, "medium": 0.041, "high": 0.165},
     "gpt-image-1": {"low": 0.016, "medium": 0.063, "high": 0.25},
 }
+# Last provider error of the current thread, so a failed render reports why (not just "empty").
+_T2I_ERROR = threading.local()
+
+
+def _t2i_fail(strprovider, strmodel, err):
+    strmsg = "{0} {1}: {2}".format(strprovider, strmodel, err)
+    _T2I_ERROR.message = strmsg[:500]
+    print("  [t2i] generation failed ({0})".format(strmsg))
+
+
 # Model ids that no longer answer: fail fast with the replacement instead of a provider error.
 T2I_RETIRED = {
     "gemini-3-pro-image-preview": "gemini-3-pro-image",  # shut down 2026-06-25
@@ -607,7 +618,7 @@ def f_text_to_image(strobjectdescription, lngseed=None, intdryrun=0, strmodel=No
     if intdryrun:
         return _placeholder_image(), (lngseed or 0), 0.0
     if strt2i in T2I_RETIRED:
-        print("  [t2i] model '{0}' is retired; use '{1}'".format(strt2i, T2I_RETIRED[strt2i]))
+        _t2i_fail("retired", strt2i, "use {0}".format(T2I_RETIRED[strt2i]))
         return None, (lngseed or 0), 0.0
     # Direct Gemini ids have no owner prefix; "google/nano-banana" is the Replicate-hosted copy.
     if strt2i.startswith("gemini") and "/" not in strt2i:
@@ -659,12 +670,56 @@ def _replicate_input(strmodel, strprompt, lngseed):
 def _t2i_replicate(strprompt, strmodel, lngseed):
     """Replicate-hosted model (FLUX.1/2, Z-Image, P-Image, Krea 2; review §8). Returns (webp_bytes, seed, cost)."""
     try:
-        import replicate
-        arrout = replicate.run(strmodel, input=_replicate_input(strmodel, strprompt, lngseed))
-        return _to_webp(_read_replicate_output(arrout)), (lngseed or 0), f_t2i_cost(strmodel)
+        bytesout = _replicate_predict(strmodel, _replicate_input(strmodel, strprompt, lngseed))
+        return _to_webp(bytesout), (lngseed or 0), f_t2i_cost(strmodel)
     except Exception as err:
-        print("  [t2i] replicate generation failed ({0}): {1}".format(strmodel, err))
+        _t2i_fail("replicate", strmodel, err)
         return None, (lngseed or 0), 0.0
+
+
+def _replicate_predict(strmodel, dctinput):
+    """
+    One Replicate prediction over plain HTTP: create, poll until it ends, download the first
+    output. Deliberately NOT the `replicate` client: its 1.0.x releases reject the prediction
+    returned for official models ("version: none is not an allowed value"), and replicate.run()
+    then waited 60 s on a prediction Replicate had finished (and billed) in 4 s (2026-10-08).
+    Short requests only; no long-held "Prefer: wait" connection. Raises on any failure.
+    """
+    import requests
+    strtoken = os.environ.get("REPLICATE_API_TOKEN", "")
+    if not strtoken:
+        raise RuntimeError("REPLICATE_API_TOKEN is not set")
+    dctheaders = {"Authorization": "Bearer " + strtoken, "Content-Type": "application/json"}
+    strapi = "https://api.replicate.com/v1"
+    if ":" in strmodel:                     # owner/name:version -> versioned endpoint
+        strurl, dctbody = strapi + "/predictions", {"version": strmodel.split(":", 1)[1], "input": dctinput}
+    else:                                   # official / latest-version model
+        strurl, dctbody = strapi + "/models/" + strmodel + "/predictions", {"input": dctinput}
+    rsp = requests.post(strurl, json=dctbody, headers=dctheaders, timeout=(10, 30))
+    if rsp.status_code >= 400:
+        raise RuntimeError("create HTTP {0}: {1}".format(rsp.status_code, rsp.text[:300]))
+    dctpred = rsp.json()
+    strgeturl = (dctpred.get("urls") or {}).get("get") or (strapi + "/predictions/" + dctpred["id"])
+    dbldeadline = time.time() + float(os.environ.get("REPLICATE_TIMEOUT", "300"))
+    while dctpred.get("status") not in ("succeeded", "failed", "canceled"):
+        if time.time() > dbldeadline:
+            raise RuntimeError("prediction {0} still '{1}' after the timeout".format(
+                dctpred.get("id"), dctpred.get("status")))
+        time.sleep(1.0)
+        rsp = requests.get(strgeturl, headers=dctheaders, timeout=(10, 30))
+        if rsp.status_code >= 400:
+            raise RuntimeError("poll HTTP {0}: {1}".format(rsp.status_code, rsp.text[:300]))
+        dctpred = rsp.json()
+    if dctpred.get("status") != "succeeded":
+        raise RuntimeError("prediction {0}: {1}".format(dctpred.get("status"), dctpred.get("error")))
+    output = dctpred.get("output")
+    strouturl = output[0] if isinstance(output, (list, tuple)) else output
+    if not strouturl:
+        raise RuntimeError("prediction succeeded without output")
+    rsp = requests.get(str(strouturl), timeout=(10, 60))
+    if rsp.status_code >= 400:
+        raise RuntimeError("download HTTP {0} for {1}".format(rsp.status_code, strouturl))
+    return rsp.content
 
 
 def _t2i_gemini(strprompt, strmodel, lngseed):
@@ -695,10 +750,10 @@ def _t2i_gemini(strprompt, strmodel, lngseed):
         for part in rsp.parts:
             if getattr(part, "inline_data", None) and part.inline_data.data:
                 return _to_webp(part.inline_data.data), (lngseed or 0), f_t2i_cost(strmodel)
-        print("  [t2i] gemini returned no image for {0} (safety block / refusal?)".format(strmodel))
+        _t2i_fail("gemini", strmodel, "no image returned (safety block / refusal?)")
         return None, (lngseed or 0), 0.0
     except Exception as err:
-        print("  [t2i] gemini generation failed ({0}): {1}".format(strmodel, err))
+        _t2i_fail("gemini", strmodel, err)
         return None, (lngseed or 0), 0.0
 
 
@@ -724,10 +779,10 @@ def _t2i_openai(strprompt, strmodel, lngseed):
         strb64 = rsp.data[0].b64_json
         if strb64:
             return _to_webp(base64.b64decode(strb64)), (lngseed or 0), f_t2i_cost(strmodel)
-        print("  [t2i] openai returned no image for {0} (safety block / refusal?)".format(strmodel))
+        _t2i_fail("openai", strmodel, "no image returned (safety block / refusal?)")
         return None, (lngseed or 0), 0.0
     except Exception as err:
-        print("  [t2i] openai generation failed ({0}): {1}".format(strmodel, err))
+        _t2i_fail("openai", strmodel, err)
         return None, (lngseed or 0), 0.0
 
 
@@ -768,15 +823,6 @@ def _to_webp(bytesimage):
     buf = io.BytesIO()
     img.save(buf, format="WEBP", quality=90)
     return buf.getvalue()
-
-
-def _read_replicate_output(arrout):
-    """Replicate returns a file-like / URL list depending on model + client version."""
-    import requests
-    item = arrout[0] if isinstance(arrout, (list, tuple)) else arrout
-    if hasattr(item, "read"):
-        return item.read()
-    return requests.get(str(item), timeout=60).content
 
 
 def _placeholder_image():
@@ -1125,10 +1171,12 @@ def f_prepare_entity(stritemclass=None, lngiditem=None, stridwikidata=None, strn
 def f_render_bytes(strobjectdescription, strt2imodelused, lngseed, intdryrun=0):
     """One provider render, no DB access (safe to run in parallel). Returns a dict."""
     dblstart = time.time()
+    _T2I_ERROR.message = ""
     bytesimage, lngseedused, dblcost = f_text_to_image(
         strobjectdescription, lngseed=lngseed, intdryrun=intdryrun, strmodel=strt2imodelused)
     return {"bytes": bytesimage, "seed": lngseedused, "cost": dblcost,
-            "seconds": round(time.time() - dblstart, 3), "model": strt2imodelused}
+            "seconds": round(time.time() - dblstart, 3), "model": strt2imodelused,
+            "error": getattr(_T2I_ERROR, "message", "") if not bytesimage else ""}
 
 
 def f_persist_candidate(dctprep, dctdesc, iddescription, lngindex, dctrender, intdryrun=0):
@@ -1155,7 +1203,7 @@ def f_persist_candidate(dctprep, dctdesc, iddescription, lngindex, dctrender, in
         "T2I_SEED": dctrender["seed"], "STYLE_VERSION": strstyleversion,
         "SOURCE": dctprep.get("source"),
         "STATUS": strstatus, "IS_VALIDATED": 1 if intok else 0,
-        "FAILURE_REASON": (strreason or "no image returned") if not intok else None,
+        "FAILURE_REASON": (dctrender.get("error") or strreason or "no image returned") if not intok else None,
         "GENERATION_COST": dctrender["cost"], "GENERATION_TIME": dctrender["seconds"],
         "TIM_GENERATED": f_now(),
     }
