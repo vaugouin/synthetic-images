@@ -45,6 +45,10 @@ docker run --rm --network="host" --env-file .env -v $HOME/docker/shared_data/syn
   synthetic-images-python-app python ./synthetic-images.py --class technical --limit 10       # real run, capped
 ```
 
+On the VPS, cron runs `synthetic-images.sh` (builds the image, starts the `synthetic-images`
+batch container unless it is already running); `off.sh` / `on.sh` switch it off and on through a
+`CRON_OFF` flag file.
+
 ## The lab: choose a model, see the prompts, render, choose (SYNTHETIC-IMAGES-020)
 
 `synthetic_images_lab.py` is a small FastAPI service with its own page, served behind NGINX at
@@ -119,7 +123,8 @@ provider key, the Tavily fallback key, storage paths, the provenance versions
 ## Evaluation — model/prompt bake-off
 
 Before mass production, validate the description template, the style template, and the model
-choices on a small fixed sample (`doc/eval-plan.md`). `eval_bakeoff.py` sweeps the **golden set**
+choices on a small fixed sample (the bake-off plan, `eval-plan.md`, lives next to the design spec in
+`%USERPROFILE%/Nestor/projets/t2s-backlog/topics/an-image-for-everything/`). `eval_bakeoff.py` sweeps the **golden set**
 (`golden_set.py`, ~35 items spanning every illustration mode) over candidate text-to-text and
 text-to-image models and writes an **isolated, reproducible run tree** — no DB writes, no
 shared-store writes:
@@ -166,8 +171,9 @@ errors auto-retry; the rest land in a manual review queue with a per-category su
 
 Scaffold + Phase-1 (Technicals) vertical slice + the **logo-padding path for companies/networks**
 (deterministic, zero model cost — see "Logo padding" above). **Live model calls are wired**: text-to-text via
-the Anthropic SDK (`claude-*`; OpenAI/Gemini branches added during the `doc/eval-plan.md` bake-off)
-and text-to-image via Replicate (FLUX.1 schnell). `--dry-run` still exercises the full loop offline
+the Anthropic SDK (`claude-*` only; OpenAI/Gemini text-to-text is not wired yet)
+and text-to-image via Replicate (FLUX.1 schnell by default), with Gemini (`gemini-*`) and OpenAI
+(`gpt-image-*`) image models called directly. `--dry-run` still exercises the full loop offline
 with no API key. Failure categorization + the review queue (review §6.1) are **designed, not yet
 implemented** — build order: schema fields + classifier → transient auto-retry → CLI
 `--report-failures` → bulk-requeue → web dashboard. See `AGENTS.md` for the keystone rules and phasing.
